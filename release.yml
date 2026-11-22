@@ -1,0 +1,57 @@
+name: Release
+
+# Kad se na main pojavi nova verzija (APP_VERSION u app.py), automatski se kreira tag i release.
+# Bilješke: release-notes/v<verzija>.md ako postoji, inače se generiraju iz commitova.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pročitaj verziju
+        id: v
+        run: |
+          VER=$(grep -oP '^APP_VERSION = "\K[^"]+' app.py)
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VER" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"; echo "v$VER već postoji - preskačem."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Provjera koda
+        if: steps.v.outputs.exists == 'false'
+        run: |
+          python3 -m py_compile app.py
+          bash -n proxmox/create-lxc.sh
+          bash -n proxmox/install-in-lxc.sh
+
+      - name: Pakiranje
+        if: steps.v.outputs.exists == 'false'
+        run: |
+          VER=${{ steps.v.outputs.version }}
+          mkdir -p dist
+          git archive --format=tar.gz --prefix=jellyclean-$VER/ -o dist/jellyclean-$VER.tar.gz HEAD
+          git archive --format=zip    --prefix=jellyclean-$VER/ -o dist/jellyclean-$VER.zip HEAD
+          cp proxmox/create-lxc.sh dist/
+          (cd dist && sha256sum * > SHA256SUMS)
+
+      - name: Kreiraj release
+        if: steps.v.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=${{ steps.v.outputs.version }}
+          NOTES=release-notes/v$VER.md
+          if [ -f "$NOTES" ]; then ARGS=(--notes-file "$NOTES"); else ARGS=(--generate-notes); fi
+          gh release create "v$VER" dist/* --target "$GITHUB_SHA" --title "JellyClean v$VER" --latest "${ARGS[@]}"
