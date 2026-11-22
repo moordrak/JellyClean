@@ -13,6 +13,7 @@
 #   • koja mapa na NAS-u odgovara kojoj biblioteci (provjera na stvarnim datotekama)
 #   • PATH_MAP, nazivi mapa, UID/GID vlasnika medija
 #   • može li servis pisati (brisati) u svaku mapu
+#   • Jellyfin config mapa na VM-u (docker inspect), SSH ključ za čišćenje cachea/logova/metadata
 #  NFS se montira UNUTAR privilegiranog LXC-a (fstab u kontejneru), ne na hostu.
 # ============================================================================
 set -Eeuo pipefail
@@ -288,6 +289,28 @@ API ključ: Jellyfin → Nadzorna ploča → API ključevi → +" y; then
   [[ -n "$JF_URL" ]] && ask JF_USERS "Koji se korisnici broje za 'pogledali svi'? (imena odvojena zarezom, prazno = svi)" ""
 fi
 
+# ============================================ 3b. JELLYFIN CONFIG (SSH) ===
+SSH_ON=0; SSH_HOST=""; SSH_USER=root; SSH_PORT=22
+if yesno "Čišćenje Jellyfin config mape (cache, slike, logovi, siročad u metadata)?
+
+Jellyfin radi na drugom računalu (npr. u Dockeru u VM-u), pa mu JellyClean
+pristupa preko SSH-a. Skripta će:
+  • u kontejneru napraviti SSH ključ (samo za JellyClean)
+  • postaviti ga na Jellyfin računalo (upišeš lozinku jednom ili ga dodaš ručno)
+  • sama pronaći gdje je Jellyfin config (docker inspect ili standardna instalacija)
+
+Na Jellyfin računalu se ništa ne instalira." y; then
+  SSH_ON=1
+  def_host=""
+  [[ -n "$JF_URL" ]] && def_host=$(echo "$JF_URL" | sed -E 's#^https?://##; s#[:/].*$##')
+  ask SSH_HOST "IP adresa ili ime računala na kojem radi Jellyfin (VM s Dockerom)
+
+Ako Jellyfinu pristupaš preko nginxa, ovdje upiši adresu VM-a, ne nginxa." "$def_host"
+  ask SSH_USER "SSH korisnik (root ili korisnik sa sudo/docker pravima)" "$SSH_USER"
+  ask SSH_PORT "SSH port" "$SSH_PORT"
+  [[ -n "$SSH_HOST" && "$SSH_PORT" =~ ^[0-9]+$ ]] || { warn "Neispravni SSH podaci - preskačem."; SSH_ON=0; }
+fi
+
 # ===================================================== 4. PONAŠANJE ======
 ALLOW_DELETE=true; TRASH=true; TRASH_DAYS=7; SCAN_H=6; PORT=8095; AUTH_USER=admin
 AUTH_PASS=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16 || true)
@@ -329,6 +352,7 @@ NFS (montira se unutar kontejnera, NFS: $NFS_VER):"
 for i in "${!MNT_SRC[@]}"; do summary+=$'\n'"  ${MNT_SRC[$i]}  →  ${MNT_DST[$i]}"; done
 summary+="
 Jellyfin:   ${JF_URL:-nije povezan}
+Config:     $([[ $SSH_ON == 1 ]] && echo "SSH $SSH_USER@$SSH_HOST:$SSH_PORT" || echo "ne")
 Brisanje:   $ALLOW_DELETE, kanta: $TRASH ($TRASH_DAYS d), skeniranje ${SCAN_H}h, port $PORT
 Izvor koda: $SRC
 
@@ -373,8 +397,8 @@ for _ in $(seq 1 30); do ctx 'ping -c1 -W1 1.1.1.1 >/dev/null 2>&1' && break; sl
 ctx 'ping -c1 -W2 1.1.1.1 >/dev/null 2>&1' || die "Kontejner nema mrežu (provjeri bridge/VLAN/IP)."
 ok "Mreža radi."
 
-info "Instaliram pakete (python3, nfs-common, git, curl)…"
-ctx "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get -y -qq upgrade >/dev/null && apt-get install -y -qq python3 nfs-common git curl ca-certificates >/dev/null"
+info "Instaliram pakete (python3, nfs-common, git, curl, ssh)…"
+ctx "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get -y -qq upgrade >/dev/null && apt-get install -y -qq python3 nfs-common git curl ca-certificates openssh-client >/dev/null"
 ok "Paketi instalirani."
 
 # ------------------------------------------------------------ NFS mount ----
@@ -668,6 +692,122 @@ if (( ${#WFAIL[@]} )); then
   yesno "Korisnik $RUN_USER (UID $RUN_UID) ne može pisati u:\n\n$(printf '  %s\n' "${WFAIL[@]}")\n\nPregled će raditi, ali brisanje u tim mapama neće.\nRješenje je na NAS-u: dozvoli pisanje korisniku $RUN_UID za IP kontejnera,\nili provjeri squash postavke NFS exporta.\n\nNastaviti?" y || die "Prekinuto."
 fi
 
+# ================================================ JELLYFIN CONFIG (SSH) ===
+JF_SSH_SUDO=false; JFC_CONFIG=""; JFC_CACHE=""; JFC_LOG=""; JFC_DATA=""; JFC_META=""
+KEY=/var/lib/jellyclean/ssh/id_ed25519
+SSH_OPTS="-p $SSH_PORT -i $KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/var/lib/jellyclean/ssh/known_hosts -o ConnectTimeout=10"
+cssh() { pct exec "$CTID" -- bash -c "ssh $SSH_OPTS -o BatchMode=yes '$SSH_USER@$SSH_HOST' $1"; }
+if (( SSH_ON )); then
+  info "Pripremam SSH ključ za pristup Jellyfin računalu…"
+  ctx "mkdir -p /var/lib/jellyclean/ssh && chmod 700 /var/lib/jellyclean/ssh && [ -f $KEY ] || ssh-keygen -q -t ed25519 -N '' -C 'jellyclean@$CT_HOST' -f $KEY"
+  PUBKEY=$(ctx "cat $KEY.pub" | tr -d '\r')
+  if cssh true 2>/dev/null; then
+    ok "SSH pristup već radi."
+  else
+    menu KEYMODE "Kako postaviti SSH ključ na $SSH_USER@$SSH_HOST?
+
+Ključ je napravljen samo za JellyClean. Javni dio treba dodati u
+~$SSH_USER/.ssh/authorized_keys na Jellyfin računalu." "lozinka" \
+      "lozinka" "Automatski - upisat ću lozinku za $SSH_USER@$SSH_HOST jednom (ssh-copy-id)" \
+      "rucno" "Ručno - prikaži javni ključ, sam ću ga dodati" \
+      "preskoci" "Preskoči - bez čišćenja Jellyfin configa"
+    case $KEYMODE in
+      lozinka)
+        echo; info "Upiši lozinku za $SSH_USER@$SSH_HOST (lozinka se ne sprema):"
+        pct exec "$CTID" -- ssh-copy-id -i "$KEY.pub" -p "$SSH_PORT" -o StrictHostKeyChecking=accept-new \
+          -o UserKnownHostsFile=/var/lib/jellyclean/ssh/known_hosts "$SSH_USER@$SSH_HOST" || warn "ssh-copy-id nije uspio." ;;
+      rucno)
+        msg "Dodaj ovaj red u ~$SSH_USER/.ssh/authorized_keys na $SSH_HOST:
+
+$PUBKEY
+
+Npr. na Jellyfin računalu:
+  echo '$PUBKEY' >> ~/.ssh/authorized_keys
+
+Pritisni OK kad je dodano."
+        echo "$PUBKEY" ;;
+      *) SSH_ON=0 ;;
+    esac
+    if (( SSH_ON )); then
+      until cssh true 2>/dev/null; do
+        yesno "SSH spajanje na $SSH_USER@$SSH_HOST još ne radi.\n\nJavni ključ:\n$PUBKEY\n\nPokušati ponovno? (Ne = preskoči čišćenje Jellyfin configa)" y || { SSH_ON=0; break; }
+      done
+    fi
+  fi
+fi
+if (( SSH_ON )); then
+  ok "SSH pristup na $SSH_USER@$SSH_HOST radi."
+  SUDO=""
+  if [[ "$SSH_USER" != root ]]; then
+    if cssh "'sudo -n true'" 2>/dev/null; then SUDO="sudo -n "; JF_SSH_SUDO=true; ok "sudo bez lozinke dostupan."
+    else warn "$SSH_USER nema sudo bez lozinke - radit će samo ako ima prava na Jellyfin mape (npr. docker grupa ne pomaže za datoteke)."; fi
+  fi
+  info "Tražim Jellyfin config na $SSH_HOST…"
+  cat > "$TMPD/jfdetect.sh" <<'DETEOF'
+found=0
+if command -v docker >/dev/null 2>&1; then
+  for id in $(docker ps -a --format '{{.ID}} {{.Image}} {{.Names}}' 2>/dev/null | grep -i jellyfin | awk '{print $1}'); do
+    name=$(docker inspect -f '{{.Name}}' "$id" | sed 's#^/##'); img=$(docker inspect -f '{{.Config.Image}}' "$id")
+    cfg=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/config"}}{{.Source}}{{end}}{{end}}' "$id")
+    cch=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/cache"}}{{.Source}}{{end}}{{end}}' "$id")
+    [ -n "$cfg" ] || continue
+    found=1
+    echo "SRC docker:$name ($img)"
+    echo "CONFIG $cfg"
+    # linuxserver: /config/data/metadata, službeni image: /config/metadata
+    if [ -d "$cfg/data/metadata" ]; then echo "DATA $cfg/data"; elif [ -d "$cfg/metadata" ]; then echo "DATA $cfg"; else echo "DATA $cfg/data"; fi
+    if [ -n "$cch" ]; then echo "CACHE $cch"; else echo "CACHE $cfg/cache"; fi
+    echo "LOG $cfg/log"
+    break
+  done
+fi
+if [ $found = 0 ] && [ -d /var/lib/jellyfin ]; then
+  echo "SRC paket (systemd)"; echo "CONFIG /var/lib/jellyfin"; echo "DATA /var/lib/jellyfin"
+  echo "CACHE /var/cache/jellyfin"; echo "LOG /var/log/jellyfin"; found=1
+fi
+[ $found = 1 ] || echo "NONE"
+DETEOF
+  pct push "$CTID" "$TMPD/jfdetect.sh" /root/jc-jfdetect.sh
+  DET=$(pct exec "$CTID" -- bash -c "ssh $SSH_OPTS -o BatchMode=yes '$SSH_USER@$SSH_HOST' '${SUDO}sh -s' < /root/jc-jfdetect.sh" 2>/dev/null || true)
+  ctx "rm -f /root/jc-jfdetect.sh" || true
+  JSRC=$(echo "$DET" | sed -n 's/^SRC //p' | head -1)
+  JFC_CONFIG=$(echo "$DET" | sed -n 's/^CONFIG //p' | head -1)
+  JFC_DATA=$(echo "$DET" | sed -n 's/^DATA //p' | head -1)
+  JFC_CACHE=$(echo "$DET" | sed -n 's/^CACHE //p' | head -1)
+  JFC_LOG=$(echo "$DET" | sed -n 's/^LOG //p' | head -1)
+  [[ -n "$JFC_DATA" ]] && JFC_META="$JFC_DATA/metadata"
+  if [[ -n "$JFC_CONFIG" ]]; then
+    yesno "Pronađen Jellyfin: $JSRC
+
+  config:    $JFC_CONFIG
+  cache:     $JFC_CACHE      (cache/images, transcodes…)
+  logovi:    $JFC_LOG
+  metadata:  $JFC_META
+
+Putanje su na računalu $SSH_HOST. JellyClean će ovdje mjeriti
+zauzeće i, kad ti to odobriš u sučelju, brisati cache, stare
+logove i siročad u metadata. Baza (data/*.db) se nikad ne dira.
+
+Prihvatiti?" y || JFC_CONFIG=""
+  fi
+  if [[ -z "$JFC_CONFIG" ]]; then
+    [[ -z "$JSRC" ]] && msg "Jellyfin config nije automatski pronađen na $SSH_HOST\n(nema Docker kontejnera s 'jellyfin' u imenu, ni /var/lib/jellyfin).\n\nUpiši putanje ručno."
+    ask JFC_CONFIG "Putanja do Jellyfin /config mape na $SSH_HOST (prazno = preskoči)" "${JFC_CONFIG:-/opt/jellyfin/config}"
+    if [[ -n "$JFC_CONFIG" ]]; then
+      ask JFC_CACHE "Cache mapa" "${JFC_CACHE:-$JFC_CONFIG/cache}"
+      ask JFC_LOG "Log mapa" "${JFC_LOG:-$JFC_CONFIG/log}"
+      ask JFC_DATA "Data mapa (u njoj je metadata)" "${JFC_DATA:-$JFC_CONFIG/data}"
+      JFC_META="$JFC_DATA/metadata"
+    else SSH_ON=0; fi
+  fi
+  if (( SSH_ON )); then
+    if cssh "'${SUDO}test -w \"$JFC_CONFIG\"'" 2>/dev/null; then ok "Jellyfin config: pristup i pravo pisanja rade."
+    else warn "$SSH_USER nema pravo pisanja u $JFC_CONFIG na $SSH_HOST - pregled radi, čišćenje neće."; fi
+  fi
+fi
+if (( ! SSH_ON )); then SSH_HOST=""; JFC_CONFIG=""; fi
+ctx "chown -R $RUN_UID:$RUN_GID /var/lib/jellyclean 2>/dev/null || true"
+
 # ========================================================= INSTALACIJA ===
 info "Instaliram JellyClean u $APP_DIR…"
 case $SRC in
@@ -691,6 +831,16 @@ cat > "$TMPD/env" <<EOF
 PORT=$(envq "$PORT")
 MEDIA_PATHS=$(envq "$media_env")
 JELLYFIN_DIRS=""
+JF_SSH_HOST=$(envq "$SSH_HOST")
+JF_SSH_USER=$(envq "$SSH_USER")
+JF_SSH_PORT=$(envq "$SSH_PORT")
+JF_SSH_KEY=/var/lib/jellyclean/ssh/id_ed25519
+JF_SSH_SUDO=$JF_SSH_SUDO
+JF_CONFIG_PATH=$(envq "$JFC_CONFIG")
+JF_CACHE_PATH=$(envq "$JFC_CACHE")
+JF_LOG_PATH=$(envq "$JFC_LOG")
+JF_DATA_PATH=$(envq "$JFC_DATA")
+JF_METADATA_PATH=$(envq "$JFC_META")
 JELLYFIN_URL=$(envq "$JF_URL")
 JELLYFIN_API_KEY=$(envq "$JF_KEY")
 JELLYFIN_USERS=$(envq "$JF_USERS")
@@ -746,7 +896,7 @@ echo "JellyClean nadograđen: \$(git log -1 --format='%h %s')"
 EOF
 pct push "$CTID" "$TMPD/upd" /usr/local/bin/jellyclean-update --perms 755
 
-ctx "mkdir -p /var/lib/jellyclean && chown $RUN_UID:$RUN_GID /var/lib/jellyclean && chown -R root:root $APP_DIR && systemctl daemon-reload && systemctl enable -q --now jellyclean"
+ctx "mkdir -p /var/lib/jellyclean && chown -R $RUN_UID:$RUN_GID /var/lib/jellyclean && chown -R root:root $APP_DIR && systemctl daemon-reload && systemctl enable -q --now jellyclean"
 
 info "Čekam da se servis pokrene…"
 CT_IP=""; HEALTH=0
@@ -768,6 +918,7 @@ cat <<EOF
   ${C_B}Mape:${C_0}          $media_env
   ${C_B}PATH_MAP:${C_0}      ${PATH_MAP:-(nije potreban)}
   ${C_B}Korisnik:${C_0}      $RUN_USER ($RUN_UID:$RUN_GID)
+  ${C_B}Jellyfin config:${C_0} $([[ -n "$JFC_CONFIG" ]] && echo "$SSH_USER@$SSH_HOST:$JFC_CONFIG" || echo "(nije podešeno)")
 
   Konfiguracija:  pct exec $CTID -- nano /etc/jellyclean.env   (pa: systemctl restart jellyclean)
   NFS mountovi:   pct exec $CTID -- cat /etc/fstab

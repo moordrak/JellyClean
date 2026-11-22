@@ -7,7 +7,7 @@ DIR=/opt/jellyclean
 RUN_USER="${RUN_USER:-root}"
 
 apt-get update -qq
-apt-get install -y -qq python3 git >/dev/null
+apt-get install -y -qq python3 git openssh-client >/dev/null
 
 if [ -d "$DIR/.git" ]; then
   git -C "$DIR" pull --ff-only

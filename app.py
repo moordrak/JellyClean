@@ -80,7 +80,26 @@ CFG = {
     "auth_pass": _env("AUTH_PASS"),
     "data_dir": _env("DATA_DIR", os.path.join(BASE_DIR, "data")),
     "verify_tls": _env("JELLYFIN_VERIFY_TLS", "true").lower() in ("1", "true", "yes", "da"),
+    # Jellyfin config mapa na drugom računalu (VM), pristup preko SSH-a
+    "ssh_host": _env("JF_SSH_HOST"),
+    "ssh_user": _env("JF_SSH_USER", "root"),
+    "ssh_port": _env("JF_SSH_PORT", "22"),
+    "ssh_key": _env("JF_SSH_KEY"),
+    "ssh_sudo": _env("JF_SSH_SUDO", "false").lower() in ("1", "true", "yes", "da"),
+    "jf_config": _env("JF_CONFIG_PATH").rstrip("/"),
+    "jf_cache": _env("JF_CACHE_PATH").rstrip("/"),
+    "jf_log": _env("JF_LOG_PATH").rstrip("/"),
+    "jf_data": _env("JF_DATA_PATH").rstrip("/"),
+    "jf_metadata": _env("JF_METADATA_PATH").rstrip("/"),
 }
+if CFG["jf_config"]:
+    CFG["jf_cache"] = CFG["jf_cache"] or CFG["jf_config"] + "/cache"
+    CFG["jf_log"] = CFG["jf_log"] or CFG["jf_config"] + "/log"
+    CFG["jf_data"] = CFG["jf_data"] or CFG["jf_config"] + "/data"
+if CFG["jf_data"]:
+    CFG["jf_metadata"] = CFG["jf_metadata"] or CFG["jf_data"] + "/metadata"
+if not CFG["ssh_key"]:
+    CFG["ssh_key"] = os.path.join(CFG["data_dir"], "ssh", "id_ed25519")
 
 VIDEO_EXT = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv", ".ts", ".m2ts", ".mpg",
              ".mpeg", ".webm", ".flv", ".iso", ".vob", ".divx", ".3gp", ".ogm"}
@@ -873,6 +892,326 @@ def item_file_targets(path, whole_dir):
 
 
 # --------------------------------------------------------------------------
+# Jellyfin config mapa preko SSH-a (cache, slike, logovi, metadata)
+# --------------------------------------------------------------------------
+
+import shlex
+import subprocess
+
+HEX32 = re.compile(r"^[0-9a-f]{32}$")
+
+
+class SSHError(Exception):
+    pass
+
+
+class JFConfig:
+    """Mjerenje i čišćenje Jellyfin config mape na drugom računalu preko SSH-a.
+    Sve naredbe se šalju kao sh skripta na stdin (bez problema s navodnicima)."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.status = None
+        self.orphans = None      # zadnja analiza siročadi
+        self.busy = False
+
+    def enabled(self):
+        return bool(CFG["ssh_host"] and CFG["jf_config"])
+
+    def paths(self):
+        return {"config": CFG["jf_config"], "cache": CFG["jf_cache"], "log": CFG["jf_log"],
+                "data": CFG["jf_data"], "metadata": CFG["jf_metadata"]}
+
+    def run(self, script, timeout=600):
+        if not self.enabled():
+            raise SSHError("SSH pristup Jellyfinu nije podešen (JF_SSH_HOST, JF_CONFIG_PATH)")
+        os.makedirs(os.path.join(CFG["data_dir"], "ssh"), exist_ok=True)
+        kh = os.path.join(CFG["data_dir"], "ssh", "known_hosts")
+        cmd = ["ssh", "-p", str(CFG["ssh_port"]), "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+               "-o", "StrictHostKeyChecking=accept-new", "-o", f"UserKnownHostsFile={kh}",
+               "-o", "LogLevel=ERROR"]
+        if CFG["ssh_key"] and os.path.exists(CFG["ssh_key"]):
+            cmd += ["-i", CFG["ssh_key"], "-o", "IdentitiesOnly=yes"]
+        cmd += [f"{CFG['ssh_user']}@{CFG['ssh_host']}", ("sudo -n " if CFG["ssh_sudo"] else "") + "sh -s"]
+        try:
+            p = subprocess.run(cmd, input="set -u\nexport LC_ALL=C\n" + script, capture_output=True,
+                               text=True, timeout=timeout)
+        except FileNotFoundError:
+            raise SSHError("Naredba 'ssh' nije instalirana (apt install openssh-client)")
+        except subprocess.TimeoutExpired:
+            raise SSHError("SSH naredba je istekla")
+        if p.returncode == 255:
+            raise SSHError("SSH spajanje nije uspjelo: " + (p.stderr.strip() or "nepoznata greška"))
+        if p.returncode != 0 and not p.stdout:
+            raise SSHError((p.stderr.strip() or f"izlazni kod {p.returncode}")[:500])
+        return p.stdout
+
+    def _vars(self):
+        q = shlex.quote
+        p = self.paths()
+        return (f"C={q(p['config'])}; CACHE={q(p['cache'])}; LOG={q(p['log'])}; "
+                f"DATA={q(p['data'])}; META={q(p['metadata'])}\n")
+
+    # ---------------------------------------------------------- pregled ---
+    def refresh_status(self):
+        script = self._vars() + r'''
+sz() { if [ -e "$1" ]; then du -sb "$1" 2>/dev/null | cut -f1; else echo -1; fi; }
+cnt() { if [ -e "$1" ]; then find "$1" -type f 2>/dev/null | wc -l; else echo 0; fi; }
+[ -d "$C" ] || { echo "ERR Mapa $C ne postoji na $(hostname)"; exit 0; }
+[ -r "$C" ] || { echo "ERR Nema prava čitanja $C"; exit 0; }
+echo "HOST $(hostname)"
+echo "LOC config $(sz "$C") 0"
+echo "LOC cache $(sz "$CACHE") $(cnt "$CACHE")"
+echo "LOC images $(sz "$CACHE/images") $(cnt "$CACHE/images")"
+echo "LOC transcodes $(sz "$CACHE/transcodes") $(cnt "$CACHE/transcodes")"
+echo "LOC log $(sz "$LOG") $(cnt "$LOG")"
+echo "LOC metadata $(sz "$META") 0"
+echo "LOC metalib $(sz "$META/library") 0"
+echo "LOC people $(sz "$META/People") 0"
+echo "LOC data $(sz "$DATA") 0"
+for d in "$CACHE"/*/ "$META"/*/; do
+  [ -d "$d" ] || continue
+  case "$d" in "$CACHE"/*) k=cache;; *) k=metadata;; esac
+  echo "SUB $k $(sz "$d") $(basename "$d")"
+done
+for f in "$DATA"/*.db "$DATA"/data/*.db; do [ -f "$f" ] && echo "DB $(sz "$f") $(basename "$f")"; done
+if [ -d "$LOG" ]; then
+  for n in 7 14 30; do
+    s=$(find "$LOG" -type f -mtime +$n -printf '%s\n' 2>/dev/null | awk '{s+=$1} END{print s+0}')
+    echo "LOGAGE $n $s"
+  done
+  o=$(find "$LOG" -type f -printf '%T@\n' 2>/dev/null | sort -n | head -1 | cut -d. -f1); echo "LOGOLD ${o:-0}"
+fi
+df -B1 -P "$C" 2>/dev/null | tail -1 | awk '{print "DF", $2, $3, $4}'
+[ -w "$C" ] && echo "WRITE 1" || echo "WRITE 0"
+'''
+        out = self.run(script)
+        st = {"host": None, "locations": {}, "subs": {"cache": [], "metadata": []}, "dbs": [],
+              "log_age": {}, "log_oldest": 0, "disk": None, "writable": False, "error": None,
+              "time": now_iso(), "paths": self.paths()}
+        for line in out.splitlines():
+            parts = line.split(" ", 3)
+            k = parts[0]
+            try:
+                if k == "ERR":
+                    st["error"] = line[4:]
+                elif k == "HOST":
+                    st["host"] = parts[1]
+                elif k == "LOC":
+                    st["locations"][parts[1]] = {"size": int(parts[2]), "files": int(parts[3])}
+                elif k == "SUB":
+                    st["subs"].setdefault(parts[1], []).append({"size": int(parts[2]), "name": parts[3]})
+                elif k == "DB":
+                    st["dbs"].append({"size": int(parts[1]), "name": line.split(" ", 2)[2]})
+                elif k == "LOGAGE":
+                    st["log_age"][parts[1]] = int(parts[2])
+                elif k == "LOGOLD":
+                    st["log_oldest"] = int(parts[1])
+                elif k == "DF":
+                    st["disk"] = {"total": int(parts[1]), "used": int(parts[2]), "free": int(parts[3])}
+                elif k == "WRITE":
+                    st["writable"] = parts[1] == "1"
+            except (ValueError, IndexError):
+                pass
+        for v in st["subs"].values():
+            v.sort(key=lambda x: -x["size"])
+        with self.lock:
+            self.status = st
+        return st
+
+    # ---------------------------------------------------------- čišćenje --
+    ACTIONS = {
+        "images": "Slike u cacheu (cache/images)",
+        "transcodes": "Ostaci transkodiranja (cache/transcodes, starije od 1 h)",
+        "cache_other": "Ostatak cachea (bez slika i transkodiranja)",
+        "logs": "Logovi",
+    }
+
+    def clean(self, action, days=0, dry_run=True):
+        if action not in self.ACTIONS:
+            raise SSHError("Nepoznata akcija")
+        days = max(0, int(days or 0))
+        if action == "logs":
+            days = max(days, 1)
+        age = f"-mtime +{days - 1}" if days > 0 else ""
+        if action == "images":
+            sel = f'"$CACHE/images" -mindepth 1 -type f {age}'
+            root = '"$CACHE/images"'
+        elif action == "transcodes":
+            sel = '"$CACHE/transcodes" -mindepth 1 -type f -mmin +60'
+            root = '"$CACHE/transcodes"'
+        elif action == "cache_other":
+            sel = (f'"$CACHE" -mindepth 1 -type f {age} -not -path "$CACHE/images/*" '
+                   f'-not -path "$CACHE/transcodes/*"')
+            root = '"$CACHE"'
+        else:
+            sel = f'"$LOG" -mindepth 1 -type f {age}'
+            root = '"$LOG"'
+        script = self._vars() + f'''
+case "$CACHE$LOG" in ""|/) echo "ERR prazna putanja"; exit 0;; esac
+[ -d {root} ] || {{ echo "RES 0 0"; exit 0; }}
+find {sel} -printf '%s\\n' 2>/dev/null | awk '{{s+=$1;n++}} END{{print "RES", n+0, s+0}}'
+'''
+        if not dry_run:
+            script += f'''
+find {sel} -delete 2>/dev/null
+find {root} -mindepth 1 -type d -empty -delete 2>/dev/null
+echo DONE
+'''
+        out = self.run(script)
+        res = {"action": action, "label": self.ACTIONS[action], "days": days, "count": 0, "size": 0,
+               "done": False, "dry_run": dry_run}
+        for line in out.splitlines():
+            p = line.split()
+            if p and p[0] == "RES":
+                res["count"], res["size"] = int(p[1]), int(p[2])
+            elif p and p[0] == "DONE":
+                res["done"] = True
+            elif p and p[0] == "ERR":
+                raise SSHError(line[4:])
+        if not dry_run:
+            log(f"Jellyfin config: {action} (>{days} d) obrisano {res['count']} datoteka, {res['size']} B")
+            threading.Thread(target=self._safe_refresh, daemon=True).start()
+        return res
+
+    def _safe_refresh(self):
+        try:
+            self.refresh_status()
+        except Exception as e:
+            log("Jellyfin config refresh:", e)
+
+    # ---------------------------------------------------------- siročad ---
+    def _jf_all_ids(self):
+        ids = set()
+        start = 0
+        while True:
+            res = JF.req("GET", "/Items", {"Recursive": "true", "EnableImages": "false",
+                                           "EnableUserData": "false", "EnableTotalRecordCount": "true",
+                                           "StartIndex": start, "Limit": 5000}, timeout=300) or {}
+            items = res.get("Items", [])
+            for it in items:
+                ids.add(it["Id"].replace("-", "").lower())
+            start += len(items)
+            if not items or start >= res.get("TotalRecordCount", 0):
+                break
+        return ids
+
+    def _item_exists_fn(self, known_id):
+        """Vrati funkciju id -> True/False/None koja pojedinačno provjerava stavku u Jellyfinu."""
+        def via_items(i):
+            try:
+                JF.req("GET", f"/Items/{i}", timeout=30)
+                return True
+            except urllib.error.HTTPError as e:
+                if e.code in (404, 400):
+                    return False
+                return None
+        if known_id and via_items(known_id):
+            return via_items
+        # stariji Jellyfin: /Users/{admin}/Items/{id}
+        users = JF.req("GET", "/Users") or []
+        admin = next((u for u in users if (u.get("Policy") or {}).get("IsAdministrator")), users[0] if users else None)
+        if not admin:
+            raise SSHError("Ne mogu provjeriti stavke: nema Jellyfin korisnika")
+
+        def via_user(i):
+            try:
+                JF.req("GET", f"/Users/{admin['Id']}/Items/{i}", timeout=30)
+                return True
+            except urllib.error.HTTPError as e:
+                if e.code in (404, 400):
+                    return False
+                return None
+        if known_id and not via_user(known_id):
+            raise SSHError("Jellyfin ne vraća ni poznatu stavku - provjera siročadi nije sigurna")
+        return via_user
+
+    def find_orphans(self):
+        """Mape u metadata/library čiji ID više ne postoji u Jellyfinu."""
+        if not JF.enabled():
+            raise SSHError("Za provjeru siročadi treba Jellyfin API (JELLYFIN_URL, JELLYFIN_API_KEY)")
+        out = self.run(self._vars() + r'''
+[ -d "$META/library" ] || { echo "ERR Nema mape $META/library"; exit 0; }
+find "$META/library" -mindepth 2 -maxdepth 2 -type d 2>/dev/null | sed "s#^$META/library/##"
+''')
+        dirs = []
+        for line in out.splitlines():
+            if line.startswith("ERR "):
+                raise SSHError(line[4:])
+            parts = line.strip().split("/")
+            if len(parts) == 2 and HEX32.match(parts[1]) and parts[1][:2] == parts[0]:
+                dirs.append(parts[1])
+        known = self._jf_all_ids()
+        cands = [d for d in dirs if d not in known]
+        # Dvostruka provjera: svaki kandidat se pojedinačno pita Jellyfin
+        exists = self._item_exists_fn(next(iter(known), None))
+        orphans, unsure = [], 0
+        for d in cands:
+            r = exists(d)
+            if r is False:
+                orphans.append(d)
+            elif r is None:
+                unsure += 1
+        sizes = {}
+        if orphans:
+            lst = "\n".join(f"{d[:2]}/{d}" for d in orphans)
+            out = self.run(self._vars() + f'''
+while read -r d; do [ -d "$META/library/$d" ] && du -sb "$META/library/$d" 2>/dev/null; done <<'EOF_LIST'
+{lst}
+EOF_LIST
+''')
+            for line in out.splitlines():
+                p = line.split("\t")
+                if len(p) == 2:
+                    sizes[os.path.basename(p[1].rstrip("/"))] = int(p[0])
+        res = {"time": now_iso(), "total_dirs": len(dirs), "jellyfin_items": len(known),
+               "orphans": [{"id": d, "size": sizes.get(d, 0)} for d in orphans],
+               "orphan_size": sum(sizes.values()), "unsure": unsure,
+               "suspicious": bool(dirs) and len(orphans) > 0.4 * len(dirs)}
+        res["orphans"].sort(key=lambda x: -x["size"])
+        with self.lock:
+            self.orphans = res
+        return res
+
+    def delete_orphans(self, ids):
+        with self.lock:
+            allowed = {o["id"] for o in (self.orphans or {}).get("orphans", [])}
+        ids = [i for i in ids if HEX32.match(i) and i in allowed]
+        if not ids:
+            raise SSHError("Nema potvrđenih siročadi za brisanje (pokreni analizu ponovno)")
+        lst = "\n".join(f"{i[:2]}/{i}" for i in ids)
+        out = self.run(self._vars() + f'''
+n=0
+while read -r d; do
+  case "$d" in ??/????????????????????????????????) ;; *) continue;; esac
+  if [ -d "$META/library/$d" ]; then rm -rf -- "$META/library/$d" && n=$((n+1)); fi
+done <<'EOF_LIST'
+{lst}
+EOF_LIST
+rmdir "$META"/library/?? 2>/dev/null
+echo "DEL $n"
+''')
+        n = 0
+        for line in out.splitlines():
+            if line.startswith("DEL "):
+                n = int(line.split()[1])
+        with self.lock:
+            if self.orphans:
+                gone = set(ids)
+                freed = sum(o["size"] for o in self.orphans["orphans"] if o["id"] in gone)
+                self.orphans["orphans"] = [o for o in self.orphans["orphans"] if o["id"] not in gone]
+                self.orphans["orphan_size"] = sum(o["size"] for o in self.orphans["orphans"])
+            else:
+                freed = 0
+        log(f"Jellyfin metadata: obrisano {n} mapa siročadi")
+        threading.Thread(target=self._safe_refresh, daemon=True).start()
+        return {"deleted": n, "freed": freed}
+
+
+JFC = JFConfig()
+
+
+# --------------------------------------------------------------------------
 # Pozadinski poslovi
 # --------------------------------------------------------------------------
 
@@ -983,6 +1322,7 @@ def overview():
             "jellyfin": {"enabled": JF.enabled(), "synced": JF.synced, "error": JF.error,
                          "running": JF.running, "server": JF.server, "users": JF.users,
                          "items": len(JF.items), "series": len(JF.series)},
+            "jfconfig": {"enabled": JFC.enabled(), "host": CFG["ssh_host"], "path": CFG["jf_config"]},
             "config": {"allow_delete": CFG["allow_delete"], "trash": CFG["trash"],
                        "trash_days": CFG["trash_days"], "scan_hours": CFG["scan_hours"]},
         }
@@ -1121,11 +1461,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"batches": trash_list(), "trash_days": CFG["trash_days"]})
             if u.path == "/api/jellyfin":
                 return self._send(200, jf_list())
+            if u.path == "/api/jfconfig":
+                if not JFC.enabled():
+                    return self._send(200, {"enabled": False})
+                st = JFC.status
+                if q.get("refresh") or st is None:
+                    st = JFC.refresh_status()
+                return self._send(200, {"enabled": True, "status": st, "orphans": JFC.orphans,
+                                        "ssh": f"{CFG['ssh_user']}@{CFG['ssh_host']}:{CFG['ssh_port']}",
+                                        "sudo": CFG["ssh_sudo"], "allow_delete": CFG["allow_delete"],
+                                        "jellyfin": JF.enabled()})
             if u.path == "/api/jellyfin/tasks":
                 if not JF.enabled():
                     return self._send(400, {"error": "Jellyfin nije podešen"})
                 return self._send(200, {"tasks": JF.scheduled_tasks()})
             return self._send(404, {"error": "Nije pronađeno"})
+        except SSHError as e:
+            return self._send(502, {"error": str(e)})
         except Exception as e:
             traceback.print_exc()
             return self._send(500, {"error": str(e)})
@@ -1166,6 +1518,18 @@ class Handler(BaseHTTPRequestHandler):
                 if not body.get("dry_run") and any(r["ok"] for r in res):
                     threading.Thread(target=lambda: (time.sleep(20), JF.sync()), daemon=True).start()
                 return self._send(200, {"results": res, "trash": CFG["trash"] and not body.get("permanent")})
+            if u.path.startswith("/api/jfconfig/"):
+                act = u.path.rsplit("/", 1)[1]
+                if act == "orphans":
+                    return self._send(200, JFC.find_orphans())
+                if not CFG["allow_delete"] and not (act == "clean" and body.get("dry_run")):
+                    return self._send(403, {"error": "Brisanje je isključeno (ALLOW_DELETE=false)"})
+                if act == "clean":
+                    return self._send(200, JFC.clean(body.get("action", ""), body.get("days", 0),
+                                                     bool(body.get("dry_run", True))))
+                if act == "delete-orphans":
+                    return self._send(200, JFC.delete_orphans(body.get("ids") or []))
+                return self._send(404, {"error": "Nije pronađeno"})
             if u.path == "/api/trash/restore":
                 dest = trash_restore(body.get("path", ""))
                 return self._send(200, {"restored": dest})
@@ -1181,7 +1545,7 @@ class Handler(BaseHTTPRequestHandler):
                 JF.req("POST", f"/ScheduledTasks/Running/{tid}")
                 return self._send(200, {"started": True})
             return self._send(404, {"error": "Nije pronađeno"})
-        except DeleteError as e:
+        except (DeleteError, SSHError) as e:
             return self._send(400, {"error": str(e)})
         except urllib.error.HTTPError as e:
             return self._send(502, {"error": f"Jellyfin HTTP {e.code}"})
@@ -1198,6 +1562,8 @@ def main():
     for l, p in CFG["jf_dirs"]:
         log(f"  jellyfin mapa: {l} = {p}" + ("" if os.path.isdir(p) else "  (NE POSTOJI!)"))
     log("  Jellyfin API: " + (CFG["jf_url"] if JF.enabled() else "nije podešen"))
+    log("  Jellyfin config (SSH): " + (f"{CFG['ssh_user']}@{CFG['ssh_host']}:{CFG['jf_config']}"
+                                       if JFC.enabled() else "nije podešen"))
     log(f"  brisanje: {'da' if CFG['allow_delete'] else 'NE'}, kanta: {'da' if CFG['trash'] else 'ne'}"
         f" ({CFG['trash_days']} dana)")
     if not CFG["auth_user"]:

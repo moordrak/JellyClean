@@ -13,6 +13,11 @@ Web servis za pregled i čišćenje prostora na Jellyfin poslužitelju. Nema van
   - brisanje cijelog filma (mapa), cijele serije ili samo epizoda koje su pogledali svi
   - video datoteke koje postoje na disku, a Jellyfin ih ne poznaje
   - pokretanje Jellyfinovih zadataka održavanja (čišćenje cache i transcode mapa, logova itd.)
+- **Jellyfin config** (preko SSH-a do računala na kojem radi Jellyfin):
+  - zauzeće mapa `cache`, `cache/images`, `cache/transcodes`, `log`, `data/metadata` i baze
+  - čišćenje slika u cacheu, ostataka transkodiranja (starijih od 1 sata), ostatka cachea i logova starijih od X dana, uvijek s pregledom prije brisanja
+  - **siročad u `metadata/library`**: mape filmova i epizoda koje više ne postoje. Uspoređuju se s Jellyfin API-jem, a svaka se još pojedinačno provjerava prije brisanja
+  - baza (`*.db`) se nikad ne dira
 - **Smeće i duplikati**: sample videi, nedovršena preuzimanja (`.part`, `.!qB`), `.exe` i `.url` datoteke iz releasea, rar arhive, prazne datoteke i mape, više verzija istog filma ili epizode.
 - **Kanta**: obrisane stavke se premještaju u `.jellyclean-trash` unutar iste mape, što je trenutno jer se ništa ne kopira. Iz kante se mogu vratiti, a automatski se prazni nakon `TRASH_DAYS` dana.
 - **Hardlinkovi**: servis označava datoteke koje imaju još jednu kopiju (tipično *arr + qBittorrent) i upozorava da njihovo brisanje ne oslobađa prostor dok se ne obriše i torrent.
@@ -34,6 +39,12 @@ Web servis za pregled i čišćenje prostora na Jellyfin poslužitelju. Nema van
 | `SCAN_INTERVAL_HOURS` | `6` | Koliko često se automatski ponovno skenira |
 | `AUTH_USER` / `AUTH_PASS` | | Basic auth. **Postavi ga**, jer sučelje može brisati datoteke |
 | `PORT` | `8095` | |
+| `JF_SSH_HOST` | `192.168.1.20` | Računalo na kojem radi Jellyfin (npr. VM s Dockerom), za čišćenje config mape |
+| `JF_SSH_USER` / `JF_SSH_PORT` | `root` / `22` | SSH korisnik i port |
+| `JF_SSH_KEY` | `/var/lib/jellyclean/ssh/id_ed25519` | Privatni ključ (zadano `DATA_DIR/ssh/id_ed25519`) |
+| `JF_SSH_SUDO` | `false` | `true` ako SSH korisnik nije root, nego ima sudo bez lozinke |
+| `JF_CONFIG_PATH` | `/opt/jellyfin/config` | Jellyfin `/config` mapa na tom računalu |
+| `JF_CACHE_PATH`, `JF_LOG_PATH`, `JF_DATA_PATH`, `JF_METADATA_PATH` | | Ako se razlikuju od zadanih (`config/cache`, `config/log`, `config/data`, `data/metadata`). Kod službenog Docker imagea su cache i data drugdje; LXC skripta to otkriva sama |
 | `JELLYFIN_VERIFY_TLS` | `true` | `false` za samopotpisani certifikat (npr. `.int` domena) |
 
 ## Pokretanje
@@ -76,7 +87,15 @@ Većinu postavki otkriva sama, a prije svake promjene pojasni prijedlog i traži
 
 Bez Jellyfina skripta predlaže mape prema imenu (`movies`, `filmovi`, `tv`, `serije`, `anime`…). Biblioteka koja nije pronađena može se ručno povezati s mapom.
 
-Ručno se upisuju samo IP adresa NAS-a, Jellyfin URL i API ključ. Sve ostalo ima prijedlog.
+**Jellyfin config preko SSH-a** (opcionalno):
+- u kontejneru se napravi SSH ključ samo za JellyClean
+- ključ se postavi na Jellyfin računalo: upišeš lozinku jednom (`ssh-copy-id`) ili ga dodaš ručno
+- putanje se otkrivaju same, preko `docker inspect` za kontejner s „jellyfin” u imenu (linuxserver ili službeni image) ili kao standardna paketna instalacija (`/var/lib/jellyfin`)
+- provjeri se pravo pisanja. Ako korisnik nije root, koristi se `sudo -n` kad je dostupan
+
+Na Jellyfin računalu se ništa ne instalira.
+
+Ručno se upisuju samo IP adresa NAS-a, Jellyfin URL i API ključ te, za čišćenje configa, adresa Jellyfin računala. Sve ostalo ima prijedlog.
 
 Ako se NFS export ne montira, najčešći uzrok je da NAS ne dopušta IP adresu kontejnera. Dodaj je u NFS dozvole na NAS-u.
 

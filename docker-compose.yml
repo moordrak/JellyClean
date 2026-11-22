@@ -19,6 +19,11 @@ services:
       # Ako Jellyfin vidi medije pod drugom putanjom: jellyfin_putanja=jellyclean_putanja
       PATH_MAP: "/data/movies=/media/movies;/data/tvshows=/media/tv"
       # JELLYFIN_USERS: "ivan,ana"     # koji korisnici se broje kod "pogledali svi"
+      # Čišćenje Jellyfin config mape preko SSH-a (cache, slike, logovi, siročad u metadata)
+      # JF_SSH_HOST: "192.168.1.20"
+      # JF_SSH_USER: "root"
+      # JF_SSH_KEY: "/data/ssh/id_ed25519"
+      # JF_CONFIG_PATH: "/opt/jellyfin/config"
       ALLOW_DELETE: "true"
       TRASH_MODE: "true"
       TRASH_DAYS: "7"
@@ -30,3 +35,4 @@ services:
       - /mnt/nas/tv:/media/tv
       - /opt/jellyfin/config:/jellyfin/config:ro
       - /opt/jellyfin/cache:/jellyfin/cache:ro
+      - ./data:/data        # SSH ključ (data/ssh/id_ed25519) i known_hosts

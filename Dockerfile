@@ -2,6 +2,7 @@ FROM python:3.12-alpine
 LABEL org.opencontainers.image.title="JellyClean" \
       org.opencontainers.image.description="Pregled i čišćenje prostora na Jellyfin poslužitelju" \
       org.opencontainers.image.source="https://github.com/moordrak/JellyClean"
+RUN apk add --no-cache openssh-client
 WORKDIR /app
 COPY app.py /app/
 COPY static /app/static

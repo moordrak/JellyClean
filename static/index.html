@@ -89,6 +89,7 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px}
     <button data-tab="files">Najveće datoteke</button>
     <button data-tab="jellyfin">Jellyfin</button>
     <button data-tab="junk">Smeće i duplikati</button>
+    <button data-tab="jfconfig">Jellyfin config</button>
     <button data-tab="trash">Kanta</button>
   </nav>
   <div class="spacer"></div>
@@ -167,6 +168,25 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px}
     <div class="card" style="padding:0"><table id="d-table"><thead><tr><th style="width:28px"></th><th>Datoteka</th><th>Vrsta</th><th class="num">Veličina</th></tr></thead><tbody></tbody></table></div></div>
   <div class="section"><h2>Prazne mape <span class="sub" id="e-sum"></span></h2>
     <div class="card" style="padding:0"><table id="e-table"><thead><tr><th style="width:28px"><input type="checkbox" id="e-all"></th><th>Mapa</th></tr></thead><tbody></tbody></table></div></div>
+</section>
+
+<!-- JELLYFIN CONFIG -->
+<section class="tab" id="tab-jfconfig">
+  <div id="jc-notes"></div>
+  <div class="toolbar"><span class="sub" id="jc-head"></span><div class="spacer"></div>
+    <button class="btn" id="jc-tasks">Jellyfin zadaci održavanja</button>
+    <button class="btn" id="jc-refresh">Izmjeri ponovno</button></div>
+  <div class="grid" id="jc-cards"></div>
+  <div class="section"><h2>Siročad u metadata mapi</h2>
+    <div class="note">Jellyfin u <code>data/metadata/library</code> čuva postere, pozadine i ostale slike za svaki film, seriju, sezonu i epizodu. Kad se nešto obriše iz biblioteke, te mape najčešće ostanu. Analiza uspoređuje mape s Jellyfinom preko API-ja, a svaku kandidatkinju još jednom pojedinačno provjerava. Brišu se samo mape stavki koje Jellyfin <b>sigurno više nema</b>.</div>
+    <div class="toolbar"><button class="btn primary" id="jc-orph">Analiziraj siročad</button><span class="sub" id="jc-orph-sum"></span><div class="spacer"></div><button class="btn danger" id="jc-orph-del" style="display:none">Obriši siročad</button></div>
+    <div id="jc-orph-warn"></div>
+    <div class="card" style="padding:0;display:none" id="jc-orph-card"><table id="jc-orph-table"><thead><tr><th>ID stavke</th><th class="num">Veličina</th></tr></thead><tbody></tbody></table></div>
+  </div>
+  <div class="section grid" style="grid-template-columns:repeat(auto-fill,minmax(420px,1fr))">
+    <div class="card"><h3>Cache - po podmapama</h3><div id="jc-sub-cache"></div></div>
+    <div class="card"><h3>Metadata - po podmapama</h3><div id="jc-sub-meta"></div></div>
+  </div>
 </section>
 
 <!-- KANTA -->
@@ -273,7 +293,7 @@ $$('#nav button').forEach(b=>b.onclick=()=>{
   current=b.dataset.tab; clearSel(); refreshCurrent();
 });
 function refreshCurrent(){
-  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash}[current]||(()=>{}))();
+  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash, jfconfig:()=>loadJc(false)}[current]||(()=>{}))();
 }
 
 // ---------------- pregled ----------------
@@ -328,6 +348,7 @@ function renderOverview(){
   q.push(card('Duplikati', fmt(OV.duplicates.size), `${OV.duplicates.count} grupa – moguća ušteda`, 'junk'));
   q.push(card('Prazne mape', OV.empty_dirs, 'mapa bez datoteka', 'junk'));
   if(OV.jellyfin.enabled) q.push(card('Jellyfin', OV.jellyfin.items.toLocaleString('hr-HR')+' stavki', OV.jellyfin.synced?`${OV.jellyfin.series} serija · korisnici: ${esc(OV.jellyfin.users.join(', '))}`:(OV.jellyfin.running?'sinkroniziram…':'nije sinkronizirano'), 'jellyfin'));
+  if(OV.jfconfig && OV.jfconfig.enabled) q.push(card('Jellyfin config', esc(OV.jfconfig.host), 'cache, slike, logovi, metadata', 'jfconfig'));
   $('#ov-quick').innerHTML = q.join('');
   const jfd = OV.roots.filter(r=>r.kind==='jellyfin');
   $('#ov-jfdirs-wrap').style.display = jfd.length?'':'none';
@@ -496,6 +517,89 @@ async function loadTrash(){
   $$('[data-empty]').forEach(b=>b.onclick=async()=>{ if(!confirm('Trajno obrisati ovu grupu? Ovo se ne može poništiti.')) return; try{ const r=await api('/api/trash/empty',{path:b.dataset.empty}); toast('Oslobođeno '+fmt(r.freed)); loadTrash(); loadOverview(); }catch(e){ toast(e.message,true) } });
 }
 $('#t-empty-all').onclick = async ()=>{ if(!confirm('Trajno isprazniti cijelu kantu? Ovo se ne može poništiti.')) return; try{ const r=await api('/api/trash/empty',{}); toast('Oslobođeno '+fmt(r.freed)); loadTrash(); loadOverview(); }catch(e){ toast(e.message,true) } };
+
+
+// ---------------- jellyfin config ----------------
+let JC=null;
+$('#jc-refresh').onclick=()=>loadJc(true);
+$('#jc-tasks').onclick=()=>{ goTab('jellyfin'); $('#jf-kind').value='tasks'; setTimeout(renderJf,300); };
+async function loadJc(refresh){
+  $('#jc-head').textContent = refresh ? 'Mjerim preko SSH-a… (velike metadata mape mogu potrajati)' : 'Učitavam…';
+  try{ JC = await api('/api/jfconfig'+(refresh?'?refresh=1':'')); }catch(e){ $('#jc-head').textContent=''; $('#jc-notes').innerHTML=`<div class="note warn">${esc(e.message)}</div>`; $('#jc-cards').innerHTML=''; return; }
+  if(!JC.enabled){
+    $('#jc-head').textContent='';
+    $('#jc-notes').innerHTML=`<div class="note">Pristup Jellyfin config mapi nije podešen. Postavi <code>JF_SSH_HOST</code>, <code>JF_SSH_USER</code> i <code>JF_CONFIG_PATH</code> (putanja do Jellyfin <code>/config</code> mape na računalu gdje Jellyfin radi), a SSH ključ stavi u <code>JF_SSH_KEY</code>. LXC skripta sve to radi automatski.</div>`;
+    $('#jc-cards').innerHTML=''; return;
+  }
+  renderJc();
+}
+function renderJc(){
+  const st=JC.status, L=st.locations||{}, sz=k=>(L[k]&&L[k].size>=0)?L[k].size:null, fc=k=>L[k]?L[k].files:0;
+  const notes=[];
+  if(st.error) notes.push(`<div class="note warn">${esc(st.error)}</div>`);
+  if(!st.writable && !st.error) notes.push(`<div class="note warn">SSH korisnik nema pravo pisanja u <code>${esc(st.paths.config)}</code>, pa čišćenje neće raditi. Koristi root ili korisnika sa sudo pravima (JF_SSH_SUDO=true).</div>`);
+  if(!JC.allow_delete) notes.push('<div class="note">Brisanje je isključeno (ALLOW_DELETE=false) – samo pregled.</div>');
+  $('#jc-notes').innerHTML=notes.join('');
+  $('#jc-head').innerHTML = `<b>${esc(st.host||JC.ssh)}</b> · ${esc(st.paths.config)} · izmjereno ${new Date(st.time).toLocaleString('hr-HR')}` +
+    (st.disk?` · disk: ${fmt(st.disk.free)} slobodno od ${fmt(st.disk.total)}`:'');
+  const cache=sz('cache'), img=sz('images')||0, tr=sz('transcodes')||0;
+  const other = cache!=null ? Math.max(0, cache-img-tr) : null;
+  const logAge = st.log_age||{};
+  const card=(title,badge,cls,size,files,desc,action,extra)=>`<div class="card"><h3>${title} <span class="pill ${cls}" style="float:right">${badge}</span></h3>
+     <div class="big">${size==null?'<span class="muted">–</span>':fmt(size)}</div><div class="sub">${files?files.toLocaleString('hr-HR')+' datoteka':''}</div>
+     <p class="sub" style="margin:10px 0">${desc}</p>${extra||''}${action||''}</div>`;
+  const act=(a,days,label)=>JC.allow_delete?`<div class="toolbar" style="margin:0">${days!==null?`<label>starije od <input type="number" min="0" id="jc-d-${a}" value="${days}" style="width:70px"> dana</label>`:''}<button class="btn danger" data-jca="${a}">${label}</button></div>`:'';
+  $('#jc-cards').innerHTML = [
+    card('Slike u cacheu','sigurno','ok',sz('images'),fc('images'),'Smanjene kopije postera i slika (<code>cache/images</code>). Jellyfin ih ponovno napravi kad zatrebaju, uz malo CPU-a pri prvom pregledavanju.', act('images',0,'Očisti')),
+    card('Transkodiranje','sigurno','ok',sz('transcodes'),fc('transcodes'),'Ostaci prekinutih transkodiranja (<code>cache/transcodes</code>). Brišu se samo datoteke starije od 1 sata, pa aktivna reprodukcija ostaje netaknuta.', act('transcodes',null,'Očisti')),
+    card('Ostatak cachea','sigurno','ok',other,Math.max(0,fc('cache')-fc('images')-fc('transcodes')),'Sve ostalo u <code>cache</code> (privremene datoteke, omoti, fontovi…). Ponovno se stvara po potrebi.', act('cache_other',0,'Očisti')),
+    card('Logovi','sigurno','ok',sz('log'),fc('log'),`Jellyfin i FFmpeg logovi (<code>log</code>). Stariji od 7 dana: ${fmt(logAge['7']||0)}, od 30 dana: ${fmt(logAge['30']||0)}.${st.log_oldest?` Najstariji je od ${new Date(st.log_oldest*1000).toLocaleDateString('hr-HR')}`:''}`, act('logs',14,'Obriši')),
+    card('Metadata','oprez','warn',sz('metadata'),0,`Preuzeti posteri, pozadine i slike glumaca (<code>data/metadata</code>). Biblioteka: ${fmt(sz('metalib')||0)}, glumci (People): ${fmt(sz('people')||0)}. <b>Ne briše se u cijelosti</b>, nego samo siročad (dolje).`, ''),
+    card('Baza i ostali podaci','ne dirati','bad',sz('data'),0,'Jellyfin baza i postavke (<code>data</code>). Samo za informaciju, JellyClean ovdje ništa ne briše.', '', st.dbs.length?'<div class="sub">'+st.dbs.map(d=>`${esc(d.name)}: ${fmt(d.size)}`).join('<br>')+'</div>':''),
+  ].join('');
+  $$('[data-jca]').forEach(b=>b.onclick=()=>jcClean(b.dataset.jca));
+  const subT = (arr)=>{ const m=Math.max(1,...arr.map(x=>x.size)); return arr.length?'<table>'+arr.slice(0,15).map(x=>`<tr><td>${esc(x.name)}</td><td><div class="sizebar"><div class="bar"><i style="width:${x.size/m*100}%"></i></div></div></td><td class="num">${fmt(x.size)}</td></tr>`).join('')+'</table>':'<div class="muted">–</div>'; };
+  $('#jc-sub-cache').innerHTML = subT(st.subs.cache||[]);
+  $('#jc-sub-meta').innerHTML = subT(st.subs.metadata||[]);
+  $('#jc-orph').disabled = !JC.jellyfin;
+  if(!JC.jellyfin) $('#jc-orph-sum').textContent='Za analizu siročadi treba Jellyfin API ključ.';
+  if(JC.orphans) renderOrphans(JC.orphans);
+}
+async function jcClean(a){
+  const inp=$('#jc-d-'+a), days = inp?Number(inp.value||0):0;
+  let r; try{ r=await api('/api/jfconfig/clean',{action:a,days,dry_run:true}); }catch(e){ return toast(e.message,true); }
+  $('#dlg-title').textContent='Čišćenje: '+r.label;
+  $('#dlg-body').innerHTML = r.count ? `<p>Na Jellyfin računalu će biti <b style="color:var(--bad)">trajno obrisano</b> <b>${r.count.toLocaleString('hr-HR')}</b> datoteka, ukupno <b>${fmt(r.size)}</b>${r.days?` (starijih od ${r.days} dana)`:''}.</p><div class="note">Ove datoteke nisu u kanti. Jellyfin ih ponovno stvara po potrebi, pa to nije problem.</div>` : '<p>Nema ničega za brisanje po ovom kriteriju.</p>';
+  $('#dlg-ok').disabled=!r.count; $('#dlg-ok').textContent='Obriši';
+  const dlg=$('#dlg'); dlg.showModal();
+  $('#dlg-cancel').onclick=()=>dlg.close();
+  $('#dlg-ok').onclick=async()=>{ $('#dlg-ok').disabled=true;
+    try{ const x=await api('/api/jfconfig/clean',{action:a,days,dry_run:false}); toast(`Obrisano ${x.count.toLocaleString('hr-HR')} datoteka (${fmt(x.size)})`); dlg.close(); setTimeout(()=>loadJc(true),1500); }
+    catch(e){ toast(e.message,true); $('#dlg-ok').disabled=false; } };
+}
+$('#jc-orph').onclick=async()=>{
+  $('#jc-orph').disabled=true; $('#jc-orph-sum').textContent='Analiziram… (uspoređujem s Jellyfinom, može potrajati)';
+  try{ const r=await api('/api/jfconfig/orphans',{}); renderOrphans(r); }catch(e){ toast(e.message,true); $('#jc-orph-sum').textContent=''; }
+  $('#jc-orph').disabled=false;
+};
+function renderOrphans(r){
+  $('#jc-orph-sum').textContent = `${r.total_dirs.toLocaleString('hr-HR')} mapa · Jellyfin ima ${r.jellyfin_items.toLocaleString('hr-HR')} stavki · siročad: ${r.orphans.length.toLocaleString('hr-HR')} (${fmt(r.orphan_size)})` + (r.unsure?` · ${r.unsure} nije bilo moguće provjeriti (preskočeno)`:'') + ` · ${new Date(r.time).toLocaleString('hr-HR')}`;
+  $('#jc-orph-warn').innerHTML = r.suspicious ? `<div class="note warn"><b>Neobično puno siročadi</b> (više od 40% mapa). To može značiti da API ključ ne vidi sve biblioteke ili da je Jellyfin usred skeniranja. Prije brisanja provjeri, a brisanje traži dodatnu potvrdu.</div>` : '';
+  $('#jc-orph-card').style.display = r.orphans.length?'':'none';
+  $('#jc-orph-table tbody').innerHTML = r.orphans.slice(0,300).map(o=>`<tr><td class="path">${esc(o.id)}</td><td class="num">${fmt(o.size)}</td></tr>`).join('') + (r.orphans.length>300?`<tr><td colspan="2" class="muted">… i još ${r.orphans.length-300}</td></tr>`:'');
+  const del=$('#jc-orph-del'); del.style.display = (r.orphans.length && JC.allow_delete)?'':'none';
+  del.onclick=()=>{
+    $('#dlg-title').textContent='Brisanje siročadi u metadata';
+    $('#dlg-body').innerHTML=`<p>Trajno se briše <b>${r.orphans.length.toLocaleString('hr-HR')}</b> mapa (<b>${fmt(r.orphan_size)}</b>) iz <code>data/metadata/library</code>.</p><p class="sub">Svaku je Jellyfin pojedinačno potvrdio kao nepostojeću stavku.</p>` + (r.suspicious?`<label class="muted"><input type="checkbox" id="jc-susp"> Razumijem upozorenje o neobično velikom broju i svejedno želim obrisati</label>`:'');
+    $('#dlg-ok').textContent='Obriši'; $('#dlg-ok').disabled=!!r.suspicious;
+    if(r.suspicious) $('#jc-susp').onchange=e=>$('#dlg-ok').disabled=!e.target.checked;
+    const dlg=$('#dlg'); dlg.showModal();
+    $('#dlg-cancel').onclick=()=>dlg.close();
+    $('#dlg-ok').onclick=async()=>{ $('#dlg-ok').disabled=true;
+      try{ const x=await api('/api/jfconfig/delete-orphans',{ids:r.orphans.map(o=>o.id)}); toast(`Obrisano ${x.deleted} mapa (${fmt(x.freed)})`); dlg.close(); JC.orphans=null; renderOrphans({...r, orphans:[], orphan_size:0}); setTimeout(()=>loadJc(true),1500); }
+      catch(e){ toast(e.message,true); $('#dlg-ok').disabled=false; } };
+  };
+}
 
 // ---------------- start ----------------
 pollScan();
