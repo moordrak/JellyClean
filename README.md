@@ -60,24 +60,25 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/moordrak/JellyClean/main
 git clone https://github.com/moordrak/JellyClean.git && bash JellyClean/proxmox/create-lxc.sh
 ```
 
-Skripta pita za:
+Skripta kreira **privileged** LXC i NFS shareove s NAS-a montira **unutar kontejnera** (`/etc/fstab` u kontejneru). Na Proxmox host se ne dodaje ništa.
 
-- ID i hostname, OS predložak (Debian 12/13, Ubuntu 24.04), storage, disk, CPU, RAM i swap
-- bridge, VLAN i DHCP ili statičku IP adresu
-- vrstu kontejnera (unprivileged ili privileged)
-- medijske mape: bind mount s hosta ili NFS mount unutar kontejnera (samo privileged)
-- UID i GID vlasnika medija. Za unprivileged kontejner nudi 1:1 idmap, inače servis ne bi mogao brisati
-- opcionalno Jellyfin config i cache mape, samo za čitanje
-- Jellyfin URL i API ključ (oba odmah provjerava), korisnike koji se broje, provjeru TLS certifikata i `PATH_MAP` za svaku mapu
-- brisanje, kantu, interval skeniranja, port, korisničko ime i lozinku (može se generirati)
-- izvor koda: GitHub, GitHub s tokenom ili lokalne datoteke
+Većinu postavki otkriva sama, a prije svake promjene pojasni prijedlog i traži odobrenje:
 
-Prije kreiranja prikazuje sažetak. Zatim skripta:
+| Korak | Što se otkriva | Kako |
+|---|---|---|
+| Kontejner | ID, storage s najviše mjesta, bridge, resursi | predlaže se sve odjednom; možeš prihvatiti ili mijenjati |
+| NFS | exporti na NAS-u | `pvesm scan nfs` ili `showmount -e` (samo čitanje). Exporti s imenom koje upućuje na medije unaprijed su označeni. Ako NAS nudi samo NFSv4, upisuju se ručno |
+| Biblioteke | Jellyfin biblioteke i njihove putanje | Jellyfin API (`/Library/VirtualFolders`) |
+| Povezivanje | koja mapa na NAS-u odgovara kojoj biblioteci | nekoliko stvarnih datoteka iz Jellyfina traži se na montiranim shareovima (npr. „✓ 8/8 datoteka”). Radi i kad se mape zovu različito (`/data/tvshows` ↔ `/mnt/nas/media/tv`) |
+| `PATH_MAP` | Jellyfin putanja → putanja u kontejneru | iz povezivanja |
+| Korisnik | UID i GID vlasnika medija | iz vlasnika pronađenih datoteka. Upozorava na `nobody` (squash) |
+| Prava | može li servis brisati | test pisanja kao taj korisnik u svakoj mapi |
 
-1. preuzme predložak, kreira kontejner i postavi mountove
-2. instalira pakete i kreira korisnika
-3. provjeri može li servis pisati u svaku medijsku mapu
-4. podigne systemd servis i ispiše adresu i lozinku
+Bez Jellyfina skripta predlaže mape prema imenu (`movies`, `filmovi`, `tv`, `serije`, `anime`…). Biblioteka koja nije pronađena može se ručno povezati s mapom.
+
+Ručno se upisuju samo IP adresa NAS-a, Jellyfin URL i API ključ. Sve ostalo ima prijedlog.
+
+Ako se NFS export ne montira, najčešći uzrok je da NAS ne dopušta IP adresu kontejnera. Dodaj je u NFS dozvole na NAS-u.
 
 Upravljanje kontejnerom:
 
