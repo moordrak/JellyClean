@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="hr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JellyClean</title>
+<style>
+:root{
+  --bg:#0f1115;--panel:#171a21;--panel2:#1e222b;--line:#2a2f3a;--text:#e6e8ec;--muted:#8b93a3;
+  --accent:#00a4dc;--accent2:#aa5cc3;--ok:#3fb950;--warn:#d29922;--bad:#f85149;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:5;flex-wrap:wrap}
+header h1{font-size:18px;margin:0;font-weight:650;letter-spacing:.2px}
+header h1 span{background:linear-gradient(90deg,var(--accent2),var(--accent));-webkit-background-clip:text;color:transparent}
+nav{display:flex;gap:4px;flex-wrap:wrap}
+nav button{background:none;border:0;color:var(--muted);padding:7px 12px;border-radius:7px;cursor:pointer;font:inherit}
+nav button.active,nav button:hover{background:var(--panel2);color:var(--text)}
+.spacer{flex:1}
+#status{color:var(--muted);font-size:12.5px}
+main{padding:20px;max-width:1500px;margin:0 auto}
+.tab{display:none}.tab.active{display:block}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.card h3{margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);font-weight:600}
+.big{font-size:26px;font-weight:650}
+.sub{color:var(--muted);font-size:12.5px}
+.bar{height:8px;background:var(--panel2);border-radius:5px;overflow:hidden;margin:8px 0 4px}
+.bar>i{display:block;height:100%;background:var(--accent)}
+.bar.warn>i{background:var(--warn)}.bar.bad>i{background:var(--bad)}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.4px;cursor:pointer;user-select:none;white-space:nowrap}
+tr:hover td{background:#1a1e26}
+td.num,th.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+td.path{font-family:var(--mono);font-size:12px;word-break:break-all}
+.sizebar{display:flex;align-items:center;gap:8px;min-width:160px}
+.sizebar .bar{flex:1;margin:0;height:6px}
+.btn{background:var(--panel2);border:1px solid var(--line);color:var(--text);padding:6px 12px;border-radius:7px;cursor:pointer;font:inherit;white-space:nowrap}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.danger{background:#3a1416;border-color:#6e2226;color:#ffb3ae}
+.btn.danger:hover{border-color:var(--bad)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.toolbar input,.toolbar select{background:var(--panel2);border:1px solid var(--line);color:var(--text);padding:6px 9px;border-radius:7px;font:inherit}
+.toolbar input[type=number]{width:90px}
+.toolbar label{color:var(--muted);font-size:12.5px;display:flex;gap:6px;align-items:center}
+.crumbs{font-family:var(--mono);font-size:12.5px;margin-bottom:10px}
+.crumbs a{color:var(--accent);cursor:pointer;text-decoration:none}
+.crumbs a:hover{text-decoration:underline}
+a.dir{color:var(--text);cursor:pointer;text-decoration:none}
+a.dir:hover{color:var(--accent)}
+.pill{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11.5px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.pill.ok{color:var(--ok);border-color:#235c2c}.pill.warn{color:var(--warn);border-color:#5e4614}.pill.bad{color:var(--bad);border-color:#6e2226}
+.sel-bar{position:sticky;bottom:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-top:12px;display:none;gap:12px;align-items:center}
+.sel-bar.show{display:flex}
+.section{margin-top:22px}
+.section h2{font-size:15px;margin:0 0 10px}
+.note{background:#1b2230;border:1px solid #2c3a52;color:#b9c7dd;border-radius:8px;padding:9px 12px;font-size:13px;margin-bottom:12px}
+.note.warn{background:#2a2312;border-color:#5e4614;color:#e8cf91}
+dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:12px;max-width:820px;width:92vw;padding:18px}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+dialog h3{margin-top:0}
+.dlg-list{max-height:45vh;overflow:auto;border:1px solid var(--line);border-radius:8px;margin:10px 0}
+.dlg-list td{font-size:12px}
+.row{display:flex;gap:10px;align-items:center;justify-content:flex-end;margin-top:12px}
+.muted{color:var(--muted)}
+.cat{display:flex;justify-content:space-between;font-size:13px;margin:3px 0}
+.stack{display:flex;height:14px;border-radius:6px;overflow:hidden;margin:10px 0}
+.stack i{display:block;height:100%}
+.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:12px;color:var(--muted)}
+.legend b{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.toast{position:fixed;right:20px;bottom:20px;background:var(--panel2);border:1px solid var(--line);padding:10px 14px;border-radius:8px;z-index:20;max-width:420px;box-shadow:0 8px 30px rgba(0,0,0,.4)}
+.toast.err{border-color:var(--bad)}
+.empty{padding:28px;text-align:center;color:var(--muted)}
+input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px}
+.seasons{font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1><span>Jelly</span>Clean</h1>
+  <nav id="nav">
+    <button data-tab="overview" class="active">Pregled</button>
+    <button data-tab="browse">Preglednik</button>
+    <button data-tab="files">Najveće datoteke</button>
+    <button data-tab="jellyfin">Jellyfin</button>
+    <button data-tab="junk">Smeće i duplikati</button>
+    <button data-tab="trash">Kanta</button>
+  </nav>
+  <div class="spacer"></div>
+  <span id="status"></span>
+  <button class="btn" id="btnScan">Skeniraj ponovno</button>
+</header>
+<main>
+
+<!-- PREGLED -->
+<section class="tab active" id="tab-overview">
+  <div id="ov-notes"></div>
+  <div class="grid" id="ov-disks"></div>
+  <div class="section"><h2>Medijske mape</h2><div class="grid" id="ov-roots"></div></div>
+  <div class="section grid" style="grid-template-columns:repeat(auto-fill,minmax(420px,1fr))">
+    <div class="card"><h3>Vrste sadržaja</h3><div id="ov-cats"></div></div>
+    <div class="card"><h3>Po ekstenziji</h3><div id="ov-ext"></div></div>
+  </div>
+  <div class="section"><h2>Brzi uvid</h2><div class="grid" id="ov-quick"></div></div>
+  <div class="section" id="ov-jfdirs-wrap" style="display:none"><h2>Jellyfin mape (config / cache / metadata)</h2><div class="grid" id="ov-jfdirs"></div></div>
+</section>
+
+<!-- PREGLEDNIK -->
+<section class="tab" id="tab-browse">
+  <div class="toolbar"><select id="br-root"></select></div>
+  <div class="crumbs" id="br-crumbs"></div>
+  <div class="card" style="padding:0">
+    <table id="br-table"><thead><tr><th style="width:28px"><input type="checkbox" id="br-all"></th><th>Naziv</th><th class="num">Veličina</th><th class="num">Datoteka</th><th class="num">Izmijenjeno</th></tr></thead><tbody></tbody></table>
+  </div>
+</section>
+
+<!-- DATOTEKE -->
+<section class="tab" id="tab-files">
+  <div class="toolbar">
+    <label>Min. MB <input type="number" id="f-min" value="1000"></label>
+    <label>Starije od (dana) <input type="number" id="f-old" value="0"></label>
+    <label>Ekstenzije <input id="f-ext" placeholder="mkv,mp4"></label>
+    <label>Traži <input id="f-q" placeholder="dio putanje"></label>
+    <select id="f-root"><option value="">Sve mape</option></select>
+    <button class="btn primary" id="f-go">Prikaži</button>
+    <span class="sub" id="f-sum"></span>
+  </div>
+  <div class="card" style="padding:0">
+    <table id="f-table"><thead><tr><th style="width:28px"><input type="checkbox" id="f-all"></th><th>Putanja</th><th class="num">Veličina</th><th class="num">Izmijenjeno</th><th></th></tr></thead><tbody></tbody></table>
+  </div>
+</section>
+
+<!-- JELLYFIN -->
+<section class="tab" id="tab-jellyfin">
+  <div id="jf-notes"></div>
+  <div class="toolbar">
+    <select id="jf-kind"><option value="movies">Filmovi</option><option value="series">Serije</option><option value="orphans">Na disku, a nije u Jellyfinu</option><option value="tasks">Jellyfin održavanje</option></select>
+    <span id="jf-filters" style="display:contents">
+      <select id="jf-filter">
+        <option value="all">Sve</option>
+        <option value="watched_all">Pogledali svi korisnici</option>
+        <option value="watched_any">Pogledao bar netko</option>
+        <option value="never">Nitko nije pogledao</option>
+        <option value="stale">Nije gledano X dana</option>
+      </select>
+      <label>X dana <input type="number" id="jf-days" value="180"></label>
+      <label>Traži <input id="jf-q"></label>
+    </span>
+    <button class="btn" id="jf-sync">Osvježi iz Jellyfina</button>
+    <span class="sub" id="jf-sum"></span>
+  </div>
+  <div class="card" style="padding:0"><table id="jf-table"><thead></thead><tbody></tbody></table></div>
+</section>
+
+<!-- SMEĆE -->
+<section class="tab" id="tab-junk">
+  <div class="note">Automatski prepoznato: sample videi, nedovršena preuzimanja (.part, .!qB), .exe/.url smeće iz releasea, rar arhive, prazne datoteke i mape te više verzija istog filma/epizode u istoj mapi. Pregledaj prije brisanja.</div>
+  <div class="section" style="margin-top:0"><h2>Smeće <span class="sub" id="j-sum"></span></h2>
+    <div class="card" style="padding:0"><table id="j-table"><thead><tr><th style="width:28px"><input type="checkbox" id="j-all"></th><th>Putanja</th><th>Razlog</th><th class="num">Veličina</th></tr></thead><tbody></tbody></table></div></div>
+  <div class="section"><h2>Duplikati <span class="sub" id="d-sum"></span></h2>
+    <div class="note">Po defaultu je označeno sve osim najveće verzije. Promijeni po potrebi.</div>
+    <div class="card" style="padding:0"><table id="d-table"><thead><tr><th style="width:28px"></th><th>Datoteka</th><th>Vrsta</th><th class="num">Veličina</th></tr></thead><tbody></tbody></table></div></div>
+  <div class="section"><h2>Prazne mape <span class="sub" id="e-sum"></span></h2>
+    <div class="card" style="padding:0"><table id="e-table"><thead><tr><th style="width:28px"><input type="checkbox" id="e-all"></th><th>Mapa</th></tr></thead><tbody></tbody></table></div></div>
+</section>
+
+<!-- KANTA -->
+<section class="tab" id="tab-trash">
+  <div class="note warn" id="t-note"></div>
+  <div class="toolbar"><button class="btn danger" id="t-empty-all">Isprazni cijelu kantu</button><span class="sub" id="t-sum"></span></div>
+  <div id="t-list"></div>
+</section>
+
+<div class="sel-bar" id="selbar">
+  <b id="sel-count">0</b><span class="muted" id="sel-size"></span>
+  <div class="spacer"></div>
+  <label class="muted" id="perm-wrap"><input type="checkbox" id="sel-perm"> trajno (bez kante)</label>
+  <button class="btn" id="sel-clear">Poništi odabir</button>
+  <button class="btn danger" id="sel-del">Obriši odabrano</button>
+</div>
+</main>
+
+<dialog id="dlg">
+  <h3 id="dlg-title">Potvrda brisanja</h3>
+  <div id="dlg-body"></div>
+  <div class="row"><button class="btn" id="dlg-cancel">Odustani</button><button class="btn danger" id="dlg-ok">Obriši</button></div>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function fmt(b){ if(b==null) return '–'; const u=['B','KB','MB','GB','TB','PB']; let i=0; b=Number(b); while(b>=1024&&i<u.length-1){b/=1024;i++} return (i?b.toFixed(b<10?2:1):b)+' '+u[i]; }
+function fdate(ts){ if(!ts) return '–'; const d = typeof ts==='number'? new Date(ts*1000) : new Date(ts); if(isNaN(d)) return '–'; return d.toLocaleDateString('hr-HR'); }
+function ago(iso){ if(!iso) return null; return (Date.now()-new Date(iso).getTime())/86400000; }
+function toast(msg, err){ const t=document.createElement('div'); t.className='toast'+(err?' err':''); t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(), err?7000:3500); }
+async function api(path, body){
+  const opt = body!==undefined ? {method:'POST', headers:{'Content-Type':'application/json','X-Requested-With':'JellyClean'}, body:JSON.stringify(body)} : {};
+  const r = await fetch(path, opt); let j={}; try{ j = await r.json() }catch(e){}
+  if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
+  return j;
+}
+const PALETTE=['#00a4dc','#aa5cc3','#3fb950','#d29922','#f85149','#8b93a3'];
+let OV = null, current='overview', browsePath=null, JFD=null;
+
+// ---------------- odabir ----------------
+const SEL = new Map(); // path -> size
+let SEL_MODE = 'paths', SEL_SCOPE = null; // ili 'jf' s ids
+function updateSel(){
+  const n=SEL.size; $('#selbar').classList.toggle('show', n>0);
+  $('#sel-count').textContent = n + (n===1?' stavka':' stavki');
+  $('#sel-size').textContent = '· ' + fmt([...SEL.values()].reduce((a,b)=>a+(b||0),0));
+  $('#perm-wrap').style.display = OV && OV.config.trash ? '' : 'none';
+}
+function clearSel(){ SEL.clear(); $$('input.sel').forEach(c=>c.checked=false); $$('thead input[type=checkbox]').forEach(c=>c.checked=false); updateSel(); }
+document.addEventListener('change', e=>{
+  const c=e.target; if(!c.classList.contains('sel')) return;
+  const key=c.dataset.key, size=Number(c.dataset.size||0);
+  const mode = c.dataset.mode || 'paths';
+  const curMode = SEL_MODE==='jf' ? 'jf:'+SEL_SCOPE : 'paths';
+  if(SEL.size && mode!==curMode){ SEL.clear(); $$('input.sel').forEach(x=>{ if(x!==c) x.checked=false }); }
+  if(mode.startsWith('jf:')){ SEL_MODE='jf'; SEL_SCOPE=mode.slice(3); } else { SEL_MODE='paths'; SEL_SCOPE=null; }
+  c.checked ? SEL.set(key,size) : SEL.delete(key);
+  updateSel();
+});
+function bindAll(id, tableId){ $(id).onchange = e => { $$(tableId+' input.sel').forEach(c=>{ if(c.checked!==e.target.checked){ c.checked=e.target.checked; c.dispatchEvent(new Event('change',{bubbles:true})); } }); }; }
+$('#sel-clear').onclick = clearSel;
+$('#sel-del').onclick = () => {
+  const perm = $('#sel-perm').checked;
+  if(SEL_MODE==='jf') confirmDelete({ids:[...SEL.keys()], scope:SEL_SCOPE}, perm, true);
+  else confirmDelete({paths:[...SEL.keys()]}, perm, false);
+};
+
+async function confirmDelete(payload, permanent, isJf){
+  const url = isJf ? '/api/jellyfin/delete' : '/api/delete';
+  let plan;
+  try{ plan = await api(url, {...payload, permanent, dry_run:true}); }catch(e){ return toast(e.message, true); }
+  const ok = plan.results.filter(r=>r.ok), bad = plan.results.filter(r=>!r.ok);
+  const total = ok.reduce((a,r)=>a+r.size,0), hl = ok.reduce((a,r)=>a+(r.hardlinked||0),0);
+  const toTrash = OV.config.trash && !permanent;
+  let h = `<p>Bit će ${toTrash?'premješteno u kantu':'<b style="color:var(--bad)">TRAJNO obrisano</b>'}: <b>${ok.length}</b> stavki, <b>${fmt(total)}</b>.</p>`;
+  if(toTrash) h += `<div class="note">Prostor se oslobađa tek kad se kanta isprazni (automatski nakon ${OV.config.trash_days} dana ili ručno).</div>`;
+  if(hl>0) h += `<div class="note warn"><b>${fmt(hl)}</b> od toga su hardlinkovi – ista datoteka postoji i drugdje (najčešće qBittorrent downloads mapa). Taj prostor se NEĆE osloboditi dok ne obrišeš i torrent.</div>`;
+  h += `<div class="note warn">Ako su filmovi/serije praćeni (monitored) u Radarru/Sonarru, oni bi ih mogli ponovno preuzeti. Prvo ih tamo isključi iz praćenja.</div>`;
+  h += '<div class="dlg-list"><table>' + ok.map(r=>`<tr><td class="path">${esc(r.path)}</td><td class="num">${fmt(r.size)}</td></tr>`).join('') +
+       bad.map(r=>`<tr><td class="path">${esc(r.path)}</td><td style="color:var(--bad)">${esc(r.error)}</td></tr>`).join('') + '</table></div>';
+  $('#dlg-body').innerHTML = h;
+  $('#dlg-ok').disabled = ok.length===0;
+  $('#dlg-ok').textContent = toTrash ? 'Premjesti u kantu' : 'Obriši trajno';
+  const dlg=$('#dlg'); dlg.showModal();
+  $('#dlg-cancel').onclick = ()=>dlg.close();
+  $('#dlg-ok').onclick = async ()=>{
+    $('#dlg-ok').disabled=true;
+    try{
+      const res = await api(url, {...payload, permanent});
+      const okn = res.results.filter(r=>r.ok);
+      const errs = res.results.filter(r=>!r.ok);
+      toast(`${okn.length} stavki ${res.trash?'premješteno u kantu':'obrisano'} (${fmt(okn.reduce((a,r)=>a+r.size,0))})` + (errs.length?`, ${errs.length} grešaka`:''), errs.length>0);
+      dlg.close(); clearSel(); await loadOverview(); refreshCurrent();
+    }catch(e){ toast(e.message,true); $('#dlg-ok').disabled=false; }
+  };
+}
+
+// ---------------- tabovi ----------------
+$$('#nav button').forEach(b=>b.onclick=()=>{
+  $$('#nav button').forEach(x=>x.classList.toggle('active',x===b));
+  $$('.tab').forEach(t=>t.classList.toggle('active', t.id==='tab-'+b.dataset.tab));
+  current=b.dataset.tab; clearSel(); refreshCurrent();
+});
+function refreshCurrent(){
+  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash}[current]||(()=>{}))();
+}
+
+// ---------------- pregled ----------------
+async function loadOverview(){
+  try{ OV = await api('/api/overview'); }catch(e){ $('#status').textContent='Greška: '+e.message; return; }
+  const s=OV.scan;
+  $('#status').textContent = s.running ? `Skeniram… ${s.progress.files.toLocaleString('hr-HR')} datoteka` :
+     (s.finished ? `Skenirano ${new Date(s.finished).toLocaleString('hr-HR')} (${s.duration}s)` : '');
+  $('#btnScan').disabled = s.running;
+  // root selectori
+  const media = OV.roots.filter(r=>r.kind==='media');
+  const opts = OV.roots.map(r=>`<option value="${esc(r.path)}">${esc(r.label)}${r.kind!=='media'?' (jellyfin)':''}</option>`).join('');
+  if($('#br-root').options.length!==OV.roots.length) $('#br-root').innerHTML = opts;
+  if($('#f-root').options.length!==media.length+1) $('#f-root').innerHTML = '<option value="">Sve mape</option>'+media.map(r=>`<option value="${esc(r.path)}">${esc(r.label)}</option>`).join('');
+  if(!browsePath && OV.roots.length) browsePath = OV.roots[0].path;
+  if(current==='overview') renderOverview();
+  return OV;
+}
+function renderOverview(){
+  if(!OV) return;
+  const notes=[];
+  if(!OV.scan.finished && OV.scan.running) notes.push(`<div class="note">Prvo skeniranje je u tijeku – na velikim NAS mapama preko NFS-a može potrajati nekoliko minuta.</div>`);
+  if(OV.scan.error) notes.push(`<div class="note warn">Greška skeniranja: ${esc(OV.scan.error)}</div>`);
+  if(!OV.jellyfin.enabled) notes.push(`<div class="note">Jellyfin API nije podešen (JELLYFIN_URL + JELLYFIN_API_KEY) – bez njega nema podataka o gledanosti.</div>`);
+  else if(OV.jellyfin.error) notes.push(`<div class="note warn">Jellyfin: ${esc(OV.jellyfin.error)}</div>`);
+  if(!OV.config.allow_delete) notes.push(`<div class="note">Brisanje je isključeno (ALLOW_DELETE=false) – samo pregled.</div>`);
+  $('#ov-notes').innerHTML=notes.join('');
+  $('#ov-disks').innerHTML = OV.disks.map(d=>{
+    const p = d.used/d.total*100, cls = p>90?'bad':p>80?'warn':'';
+    return `<div class="card"><h3>Disk · ${esc(d.roots.join(', '))}</h3><div class="big">${fmt(d.free)} <span class="sub">slobodno</span></div>
+      <div class="bar ${cls}"><i style="width:${p.toFixed(1)}%"></i></div><div class="sub">${fmt(d.used)} od ${fmt(d.total)} zauzeto (${p.toFixed(1)}%)</div></div>`;
+  }).join('') || '<div class="card empty">Nema podataka o disku</div>';
+  const media = OV.roots.filter(r=>r.kind==='media');
+  const maxM = Math.max(1,...media.map(r=>r.size));
+  $('#ov-roots').innerHTML = media.map(r=>{
+    const top = r.top.slice(0,6).map(t=>`<div class="cat"><a class="dir" data-go="${esc(t.path)}">${esc(t.name)}</a><span>${fmt(t.size)}</span></div>`).join('');
+    return `<div class="card"><h3>${esc(r.label)}</h3>${!r.exists?'<div class="pill bad">mapa ne postoji</div>':''}
+      <div class="big">${fmt(r.size)}</div><div class="sub">${r.files.toLocaleString('hr-HR')} datoteka · <span class="path">${esc(r.path)}</span></div>
+      <div class="bar"><i style="width:${(r.size/maxM*100).toFixed(1)}%"></i></div>
+      ${r.trash_size?`<div class="pill warn">u kanti: ${fmt(r.trash_size)}</div> `:''}
+      ${r.hardlinked_bytes?`<div class="pill" title="Datoteke koje imaju još jedan hardlink (npr. u torrent mapi). Brisanje ovdje ne oslobađa prostor dok postoji druga kopija.">hardlinkano: ${fmt(r.hardlinked_bytes)}</div>`:''}
+      ${r.error_count?`<div class="pill bad" title="${esc(r.errors.join('\n'))}">${r.error_count} grešaka pristupa</div>`:''}
+      <div style="margin-top:10px">${top}</div></div>`;
+  }).join('');
+  const cats = Object.entries(OV.categories).filter(([k,v])=>v>0), ctot = cats.reduce((a,[,v])=>a+v,0)||1;
+  $('#ov-cats').innerHTML = `<div class="stack">${cats.map(([k,v],i)=>`<i style="width:${v/ctot*100}%;background:${PALETTE[i%6]}" title="${esc(k)}"></i>`).join('')}</div>
+    <div class="legend">${cats.map(([k,v],i)=>`<span><b style="background:${PALETTE[i%6]}"></b>${esc(k)} ${fmt(v)}</span>`).join('')}</div>`;
+  const emax = Math.max(1,...OV.ext.map(e=>e[2]));
+  $('#ov-ext').innerHTML = '<table>'+OV.ext.slice(0,10).map(e=>`<tr><td>${esc(e[0])}</td><td class="num muted">${e[1].toLocaleString('hr-HR')}</td><td><div class="sizebar"><div class="bar"><i style="width:${e[2]/emax*100}%"></i></div></div></td><td class="num">${fmt(e[2])}</td></tr>`).join('')+'</table>';
+  const q = [];
+  q.push(card('Smeće', fmt(OV.junk.size), `${OV.junk.count} datoteka (sample, .part, .exe…)`, 'junk'));
+  q.push(card('Duplikati', fmt(OV.duplicates.size), `${OV.duplicates.count} grupa – moguća ušteda`, 'junk'));
+  q.push(card('Prazne mape', OV.empty_dirs, 'mapa bez datoteka', 'junk'));
+  if(OV.jellyfin.enabled) q.push(card('Jellyfin', OV.jellyfin.items.toLocaleString('hr-HR')+' stavki', OV.jellyfin.synced?`${OV.jellyfin.series} serija · korisnici: ${esc(OV.jellyfin.users.join(', '))}`:(OV.jellyfin.running?'sinkroniziram…':'nije sinkronizirano'), 'jellyfin'));
+  $('#ov-quick').innerHTML = q.join('');
+  const jfd = OV.roots.filter(r=>r.kind==='jellyfin');
+  $('#ov-jfdirs-wrap').style.display = jfd.length?'':'none';
+  $('#ov-jfdirs').innerHTML = jfd.map(r=>`<div class="card"><h3>${esc(r.label)}</h3><div class="big">${fmt(r.size)}</div><div class="sub">${r.files.toLocaleString('hr-HR')} datoteka</div>
+    <div style="margin-top:10px">${r.top.slice(0,8).map(t=>`<div class="cat"><a class="dir" data-go="${esc(t.path)}">${esc(t.name)}</a><span>${fmt(t.size)}</span></div>`).join('')}</div></div>`).join('');
+}
+function card(t, big, sub, tab){ return `<div class="card" style="cursor:pointer" data-tabgo="${tab}"><h3>${t}</h3><div class="big">${big}</div><div class="sub">${sub}</div></div>`; }
+document.addEventListener('click', e=>{
+  const g=e.target.closest('[data-go]'); if(g){ browsePath=g.dataset.go; goTab('browse'); return; }
+  const t=e.target.closest('[data-tabgo]'); if(t){ goTab(t.dataset.tabgo); }
+});
+function goTab(name){ $(`#nav button[data-tab="${name}"]`).click(); }
+$('#btnScan').onclick = async ()=>{ try{ await api('/api/scan',{jellyfin:true}); toast('Skeniranje pokrenuto'); pollScan(); }catch(e){ toast(e.message,true) } };
+async function pollScan(){ await loadOverview(); if(OV && (OV.scan.running || OV.jellyfin.running)) setTimeout(pollScan, 2000); else refreshCurrent(); }
+
+// ---------------- preglednik ----------------
+$('#br-root').onchange = e=>{ browsePath=e.target.value; loadDir(browsePath); };
+async function loadDir(path){
+  if(!path) return;
+  let d; try{ d = await api('/api/dir?path='+encodeURIComponent(path)); }catch(e){ $('#br-table tbody').innerHTML=`<tr><td colspan="5" class="empty">${esc(e.message)}</td></tr>`; return; }
+  browsePath = d.path; $('#br-root').value = d.root.path;
+  $('#br-crumbs').innerHTML = d.crumbs.map(c=>`<a data-path="${esc(c.path)}">${esc(c.name)}</a>`).join(' / ');
+  const rows = [...(d.children||[]).filter(c=>c.is_dir), ...d.file_entries];
+  const max = Math.max(1, ...rows.map(r=>r.size));
+  const del = d.deletable;
+  $('#br-all').style.visibility = del?'':'hidden';
+  $('#br-table tbody').innerHTML = rows.map(r=>{
+    const name = r.is_dir ? `<a class="dir" data-path="${esc(r.path)}">📁 ${esc(r.name)}</a>` : `<span>${esc(r.name)}</span>${r.nlink>1?' <span class="pill" title="Hardlink – postoji još jedna kopija na istom disku">hardlink</span>':''}`;
+    return `<tr><td>${del?`<input type="checkbox" class="sel" data-key="${esc(r.path)}" data-size="${r.size}" ${SEL.has(r.path)?'checked':''}>`:''}</td>
+      <td>${name}</td><td class="num"><div class="sizebar"><div class="bar"><i style="width:${(r.size/max*100).toFixed(1)}%"></i></div>${fmt(r.size)}</div></td>
+      <td class="num muted">${r.is_dir? r.files.toLocaleString('hr-HR') : ''}</td><td class="num muted">${fdate(r.mtime)}</td></tr>`;
+  }).join('') || '<tr><td colspan="5" class="empty">Prazno</td></tr>';
+  $$('#br-crumbs a, #br-table a.dir').forEach(a=>a.onclick=()=>loadDir(a.dataset.path));
+}
+bindAll('#br-all','#br-table');
+
+// ---------------- datoteke ----------------
+$('#f-go').onclick = loadFiles;
+async function loadFiles(){
+  const p = new URLSearchParams({min_mb:$('#f-min').value||0, older_days:$('#f-old').value||0, ext:$('#f-ext').value, q:$('#f-q').value, root:$('#f-root').value, limit:500});
+  let d; try{ d = await api('/api/files?'+p); }catch(e){ return toast(e.message,true); }
+  $('#f-sum').textContent = `Prikazano ${d.files.length} · ukupno po filtru ${fmt(d.total)}`;
+  const max = Math.max(1,...d.files.map(f=>f.size));
+  $('#f-table tbody').innerHTML = d.files.map(f=>`<tr><td><input type="checkbox" class="sel" data-key="${esc(f.path)}" data-size="${f.size}"></td>
+    <td class="path">${esc(f.path)}</td><td class="num"><div class="sizebar"><div class="bar"><i style="width:${(f.size/max*100).toFixed(1)}%"></i></div>${fmt(f.size)}</div></td>
+    <td class="num muted">${fdate(f.mtime)}</td><td>${f.nlink>1?'<span class="pill" title="Hardlink – brisanje ne oslobađa prostor dok postoji druga kopija">hardlink</span>':''}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">Ništa ne odgovara filtru</td></tr>';
+}
+bindAll('#f-all','#f-table');
+
+// ---------------- jellyfin ----------------
+let jfSort = {key:'size', dir:-1};
+$('#jf-kind').onchange = ()=>{ clearSel(); renderJf(); };
+['#jf-filter','#jf-days','#jf-q'].forEach(s=>$(s).oninput=()=>renderJf());
+$('#jf-sync').onclick = async ()=>{ try{ await api('/api/jellyfin/sync',{}); toast('Sinkronizacija pokrenuta'); setTimeout(async function w(){ await loadOverview(); if(OV.jellyfin.running) setTimeout(w,2000); else loadJf(); },1500);}catch(e){ toast(e.message,true) } };
+async function loadJf(){
+  if(OV && !OV.jellyfin.enabled){ $('#jf-notes').innerHTML='<div class="note warn">Jellyfin nije podešen. Postavi JELLYFIN_URL i JELLYFIN_API_KEY (Jellyfin → Nadzorna ploča → API ključevi).</div>'; $('#jf-table thead').innerHTML=''; $('#jf-table tbody').innerHTML=''; return; }
+  try{ JFD = await api('/api/jellyfin'); }catch(e){ return toast(e.message,true); }
+  const n=[];
+  if(JFD.error) n.push(`<div class="note warn">Jellyfin: ${esc(JFD.error)}</div>`);
+  if(JFD.running) n.push('<div class="note">Sinkronizacija u tijeku…</div>');
+  if(JFD.missing_count>0) n.push(`<div class="note warn">${JFD.missing_count} Jellyfin stavki ne postoji na putanji koju ovaj servis vidi (npr. <code>${esc(JFD.missing_on_disk[0].path)}</code>). Ako Jellyfin i JellyClean montiraju medije na različite putanje, postavi <b>PATH_MAP</b>.</div>`);
+  $('#jf-notes').innerHTML=n.join('');
+  renderJf();
+}
+function jfFilter(r){
+  const f=$('#jf-filter').value, days=Number($('#jf-days').value||0), q=$('#jf-q').value.toLowerCase(), nu=JFD.users.length;
+  if(q && !((r.name||'')+' '+(r.path||'')).toLowerCase().includes(q)) return false;
+  const watchedAll = r.watched_all!==undefined && typeof r.watched_all==='boolean' ? r.watched_all : (r.episodes? r.watched_all>=r.episodes : false);
+  const watchedAny = r.played_by ? r.played_by.length>0 : r.watched_any>0;
+  if(f==='watched_all') return watchedAll;
+  if(f==='watched_any') return watchedAny;
+  if(f==='never') return !watchedAny;
+  if(f==='stale'){ const lp = ago(r.last_played), ad = ago(r.added); return (lp===null ? (ad===null || ad>days) : lp>days); }
+  return true;
+}
+function sortRows(rows){ const {key,dir}=jfSort; return rows.sort((a,b)=>{ let x=a[key],y=b[key]; if(x==null) return 1; if(y==null) return -1; return (x>y?1:x<y?-1:0)*dir; }); }
+function th(key,label,num){ return `<th class="${num?'num':''}" data-sort="${key}">${label}${jfSort.key===key?(jfSort.dir>0?' ▲':' ▼'):''}</th>`; }
+function lastPlayed(r){ const d=ago(r.last_played); return d===null?'<span class="muted">nikad</span>':`${fdate(r.last_played)} <span class="muted">(${Math.round(d)} d)</span>`; }
+function renderJf(){
+  if(!JFD) return;
+  const kind=$('#jf-kind').value;
+  $('#jf-filters').style.display = (kind==='movies'||kind==='series')?'contents':'none';
+  const head=$('#jf-table thead'), body=$('#jf-table tbody');
+  if(kind==='tasks') return renderTasks();
+  if(kind==='orphans'){
+    $('#jf-sum').textContent = `${JFD.orphans.length} video datoteka · ${fmt(JFD.orphans_size)}`;
+    head.innerHTML = '<tr><th style="width:28px"><input type="checkbox" id="jf-all"></th><th>Putanja</th><th class="num">Veličina</th><th class="num">Izmijenjeno</th></tr>';
+    body.innerHTML = JFD.orphans.map(o=>`<tr><td><input type="checkbox" class="sel" data-key="${esc(o.path)}" data-size="${o.size}"></td><td class="path">${esc(o.path)}</td><td class="num">${fmt(o.size)}</td><td class="num muted">${fdate(o.mtime)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Sve video datoteke su u Jellyfinu 👍</td></tr>';
+    bindAll('#jf-all','#jf-table'); return;
+  }
+  const nu = JFD.users.length;
+  if(kind==='movies'){
+    const rows = sortRows(JFD.movies.filter(jfFilter));
+    $('#jf-sum').textContent = `${rows.length} filmova · ${fmt(rows.reduce((a,r)=>a+(r.size||0),0))}`;
+    head.innerHTML = `<tr><th style="width:28px"><input type="checkbox" id="jf-all"></th>${th('name','Film')}${th('size','Veličina',1)}<th>Pogledali</th>${th('last_played','Zadnje gledano')}${th('added','Dodano')}</tr>`;
+    body.innerHTML = rows.map(r=>`<tr><td>${r.on_disk?`<input type="checkbox" class="sel" data-mode="jf:item" data-key="${r.id}" data-size="${r.size||0}">`:''}</td>
+      <td>${esc(r.name)} ${r.year?`<span class="muted">(${r.year})</span>`:''}<div class="path muted">${esc(r.path)}</div>${r.on_disk?'':'<span class="pill bad">nije na disku</span>'}</td>
+      <td class="num">${fmt(r.size)}</td>
+      <td>${r.watched_all?`<span class="pill ok">svi (${nu})</span>`:r.played_by.length?`<span class="pill warn" title="${esc(r.played_by.join(', '))}">${r.played_by.length}/${nu}</span>`:'<span class="pill">nitko</span>'}
+          ${r.in_progress_by.length?`<span class="pill" title="${esc(r.in_progress_by.join(', '))}">u tijeku</span>`:''}</td>
+      <td class="num">${lastPlayed(r)}</td><td class="num muted">${fdate(r.added)}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">Nema filmova po filtru</td></tr>';
+  } else {
+    const rows = sortRows(JFD.series.filter(jfFilter));
+    $('#jf-sum').textContent = `${rows.length} serija · ${fmt(rows.reduce((a,r)=>a+(r.size||0),0))}`;
+    head.innerHTML = `<tr><th style="width:28px"><input type="checkbox" id="jf-all"></th>${th('name','Serija')}${th('size','Veličina',1)}${th('watched_all_size','Odgledano (svi)',1)}<th>Epizode</th>${th('last_played','Zadnje gledano')}<th></th></tr>`;
+    body.innerHTML = rows.map(s=>{
+      const seasons = s.seasons.map(x=>`S${esc(x.season)}: ${x.watched_all}/${x.episodes} · ${fmt(x.size)}`).join(' &nbsp;|&nbsp; ');
+      return `<tr><td>${s.on_disk?`<input type="checkbox" class="sel" data-mode="jf:series" data-key="${esc(s.id)}" data-size="${s.size}">`:''}</td>
+      <td>${esc(s.name)} ${s.year?`<span class="muted">(${s.year})</span>`:''}<div class="path muted">${esc(s.path||'')}</div><div class="seasons">${seasons}</div></td>
+      <td class="num">${fmt(s.size)}</td><td class="num">${s.watched_all_size?fmt(s.watched_all_size):'–'}</td>
+      <td>${s.watched_all>=s.episodes?`<span class="pill ok">sve odgledano</span>`:`<span class="pill">${s.watched_all}/${s.episodes}</span>`}</td>
+      <td class="num">${lastPlayed(s)}</td>
+      <td>${s.watched_all>0 && s.watched_all<s.episodes?`<button class="btn" data-sw="${esc(s.id)}" title="Obriši samo epizode koje su pogledali svi korisnici">Obriši odgledane</button>`:''}</td></tr>`;
+    }).join('') || '<tr><td colspan="7" class="empty">Nema serija po filtru</td></tr>';
+    $$('[data-sw]').forEach(b=>b.onclick=()=>confirmDelete({ids:[b.dataset.sw], scope:'series_watched'}, $('#sel-perm').checked, true));
+  }
+  $$('#jf-table th[data-sort]').forEach(h=>h.onclick=()=>{ const k=h.dataset.sort; jfSort = {key:k, dir: jfSort.key===k ? -jfSort.dir : (k==='name'?1:-1)}; renderJf(); });
+  bindAll('#jf-all','#jf-table');
+}
+async function renderTasks(){
+  $('#jf-sum').textContent='';
+  $('#jf-table thead').innerHTML='<tr><th>Zadatak</th><th>Kategorija</th><th>Zadnje pokretanje</th><th>Stanje</th><th></th></tr>';
+  let d; try{ d=await api('/api/jellyfin/tasks'); }catch(e){ $('#jf-table tbody').innerHTML=`<tr><td colspan="5" class="empty">${esc(e.message)}</td></tr>`; return; }
+  const pri = t => /clean|delete|optimi|trickplay|chapter|image|log|cache|transcod/i.test((t.key||'')+(t.name||'')) ? 0 : 1;
+  d.tasks.sort((a,b)=>pri(a)-pri(b) || (a.category||'').localeCompare(b.category||''));
+  $('#jf-table tbody').innerHTML = d.tasks.map(t=>`<tr><td><b>${esc(t.name)}</b><div class="sub">${esc(t.description||'')}</div></td><td class="muted">${esc(t.category)}</td>
+    <td class="muted">${t.last_end?new Date(t.last_end).toLocaleString('hr-HR'):'–'} ${t.last_status?`<span class="pill ${t.last_status==='Completed'?'ok':'warn'}">${esc(t.last_status)}</span>`:''}</td>
+    <td>${t.state==='Running'?`<span class="pill warn">radi ${t.progress?Math.round(t.progress)+'%':''}</span>`:'<span class="pill">miruje</span>'}</td>
+    <td><button class="btn" data-task="${esc(t.id)}" ${t.state==='Running'?'disabled':''}>Pokreni</button></td></tr>`).join('');
+  $$('[data-task]').forEach(b=>b.onclick=async()=>{ try{ await api('/api/jellyfin/task',{id:b.dataset.task}); toast('Zadatak pokrenut'); setTimeout(renderTasks,1500);}catch(e){ toast(e.message,true) } });
+}
+
+// ---------------- smeće ----------------
+async function loadJunk(){
+  let d; try{ d=await api('/api/junk'); }catch(e){ return toast(e.message,true); }
+  $('#j-sum').textContent = `${d.junk.length} · ${fmt(d.junk.reduce((a,j)=>a+j.size,0))}`;
+  $('#j-table tbody').innerHTML = d.junk.map(j=>`<tr><td><input type="checkbox" class="sel" data-key="${esc(j.path)}" data-size="${j.size}"></td><td class="path">${esc(j.path)}</td><td><span class="pill">${esc(j.reason)}</span></td><td class="num">${fmt(j.size)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Nema smeća 👍</td></tr>';
+  const saving = d.duplicates.reduce((a,g)=>a+g.files.slice(1).reduce((x,f)=>x+f.size,0),0);
+  $('#d-sum').textContent = `${d.duplicates.length} grupa · moguća ušteda ${fmt(saving)}`;
+  $('#d-table tbody').innerHTML = d.duplicates.map(g=>
+    `<tr><td></td><td colspan="3" class="path" style="color:var(--accent)"><a class="dir" data-go="${esc(g.dir)}">${esc(g.dir)}</a></td></tr>` +
+    g.files.map((f,i)=>`<tr><td><input type="checkbox" class="sel" data-key="${esc(f.path)}" data-size="${f.size}"></td><td class="path">${esc(f.path.split('/').pop())}</td><td>${i===0?'<span class="pill ok">najveća</span>':`<span class="pill">${esc(g.kind)}</span>`}</td><td class="num">${fmt(f.size)}</td></tr>`).join('')
+  ).join('') || '<tr><td colspan="4" class="empty">Nema duplikata</td></tr>';
+  $('#e-sum').textContent = `${d.empty_dirs.length}`;
+  $('#e-table tbody').innerHTML = d.empty_dirs.map(p=>`<tr><td><input type="checkbox" class="sel" data-key="${esc(p)}" data-size="0"></td><td class="path">${esc(p)}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">Nema praznih mapa</td></tr>';
+  // predodabir duplikata osim najvećeg - samo na zahtjev
+  const bt = document.createElement('button'); bt.className='btn'; bt.textContent='Označi sve osim najveće verzije';
+  bt.onclick=()=>{ $$('#d-table tbody tr').forEach(tr=>{ const c=tr.querySelector('input.sel'); if(c && !tr.querySelector('.pill.ok') && !c.checked){ c.checked=true; c.dispatchEvent(new Event('change',{bubbles:true})); } }); };
+  const h=$('#d-sum').parentElement; h.querySelector('button')?.remove(); if(d.duplicates.length) { bt.style.marginLeft='10px'; h.appendChild(bt); }
+}
+bindAll('#j-all','#j-table'); bindAll('#e-all','#e-table');
+
+// ---------------- kanta ----------------
+async function loadTrash(){
+  let d; try{ d=await api('/api/trash'); }catch(e){ return toast(e.message,true); }
+  $('#t-note').innerHTML = OV.config.trash ? `Obrisane stavke se premještaju u <code>.jellyclean-trash</code> unutar iste medijske mape (bez kopiranja, trenutno). Prostor se oslobađa tek pražnjenjem. Automatsko pražnjenje: ${d.trash_days>0?`nakon ${d.trash_days} dana`:'isključeno'}.` : 'Kanta je isključena (TRASH_MODE=false) – brisanje je odmah trajno.';
+  const total = d.batches.reduce((a,b)=>a+b.size,0);
+  $('#t-sum').textContent = `${d.batches.length} brisanja · ${fmt(total)}`;
+  $('#t-empty-all').disabled = !d.batches.length;
+  $('#t-list').innerHTML = d.batches.map(b=>`<div class="card" style="margin-bottom:12px;padding:0">
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line)"><b>${esc(b.root)}</b><span class="muted">${esc(b.batch.replace(/(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)/,'$3.$2.$1. $4:$5'))}</span>
+      ${b.age_days!=null&&d.trash_days>0?`<span class="pill">auto-brisanje za ${Math.max(0,Math.ceil(d.trash_days-b.age_days))} d</span>`:''}<div class="spacer"></div><b>${fmt(b.size)}</b>
+      <button class="btn danger" data-empty="${esc(b.path)}">Obriši trajno</button></div>
+    <table>${b.items.map(i=>`<tr><td class="path">${esc(i.original)}</td><td class="num">${fmt(i.size)}</td><td style="width:110px"><button class="btn" data-restore="${esc(i.path)}" ${i.exists_original?'disabled title="Na originalnoj lokaciji već nešto postoji"':''}>Vrati</button></td></tr>`).join('')}</table></div>`).join('') || '<div class="card empty">Kanta je prazna</div>';
+  $$('[data-restore]').forEach(b=>b.onclick=async()=>{ try{ const r=await api('/api/trash/restore',{path:b.dataset.restore}); toast('Vraćeno: '+r.restored); loadTrash(); loadOverview(); }catch(e){ toast(e.message,true) } });
+  $$('[data-empty]').forEach(b=>b.onclick=async()=>{ if(!confirm('Trajno obrisati ovu grupu? Ovo se ne može poništiti.')) return; try{ const r=await api('/api/trash/empty',{path:b.dataset.empty}); toast('Oslobođeno '+fmt(r.freed)); loadTrash(); loadOverview(); }catch(e){ toast(e.message,true) } });
+}
+$('#t-empty-all').onclick = async ()=>{ if(!confirm('Trajno isprazniti cijelu kantu? Ovo se ne može poništiti.')) return; try{ const r=await api('/api/trash/empty',{}); toast('Oslobođeno '+fmt(r.freed)); loadTrash(); loadOverview(); }catch(e){ toast(e.message,true) } };
+
+// ---------------- start ----------------
+pollScan();
+setInterval(()=>{ if(!OV || (!OV.scan.running && !OV.jellyfin.running)) loadOverview(); }, 60000);
+</script>
+</body>
+</html>

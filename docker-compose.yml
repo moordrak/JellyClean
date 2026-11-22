@@ -1,0 +1,32 @@
+services:
+  jellyclean:
+    build: .
+    image: jellyclean:latest
+    container_name: jellyclean
+    restart: unless-stopped
+    ports:
+      - "8095:8095"
+    # Isti UID/GID kao Jellyfin / *arr (inače nema prava brisati)
+    user: "1000:1000"
+    environment:
+      TZ: Europe/Zagreb
+      # Oznaka=putanja unutar kontejnera, odvojeno zarezom
+      MEDIA_PATHS: "Filmovi=/media/movies,Serije=/media/tv"
+      # Jellyfin config/cache mape (samo za pregled, ne briše se iz njih)
+      JELLYFIN_DIRS: "Config=/jellyfin/config,Cache=/jellyfin/cache"
+      JELLYFIN_URL: "http://192.168.1.10:8096"
+      JELLYFIN_API_KEY: "promijeni-me"
+      # Ako Jellyfin vidi medije pod drugom putanjom: jellyfin_putanja=jellyclean_putanja
+      PATH_MAP: "/data/movies=/media/movies;/data/tvshows=/media/tv"
+      # JELLYFIN_USERS: "ivan,ana"     # koji korisnici se broje kod "pogledali svi"
+      ALLOW_DELETE: "true"
+      TRASH_MODE: "true"
+      TRASH_DAYS: "7"
+      SCAN_INTERVAL_HOURS: "6"
+      AUTH_USER: "admin"
+      AUTH_PASS: "promijeni-me"
+    volumes:
+      - /mnt/nas/movies:/media/movies
+      - /mnt/nas/tv:/media/tv
+      - /opt/jellyfin/config:/jellyfin/config:ro
+      - /opt/jellyfin/cache:/jellyfin/cache:ro
