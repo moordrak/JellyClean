@@ -107,6 +107,17 @@ dialog.wide{max-width:1150px}
 #extdlg .head{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 #extdlg .head h3{margin:0}
 #extdlg .xclose{margin-left:auto}
+/* ---- Jellyfin data mapa ---- */
+.datacard{grid-column:1/-1;min-width:0}
+.dt-wrap{margin-top:6px;overflow-x:auto}
+.dtable{width:100%;table-layout:fixed}
+.dtable td{overflow-wrap:anywhere}
+.dtable .dt-name{width:auto}
+.dtable .dt-bar{width:28%}
+.dtable .dt-bar .bar{margin:0;height:6px}
+.dtable .dt-size{width:92px}
+@media (max-width:640px){.dtable .dt-bar{display:none}}
+.card{min-width:0}
 </style>
 </head>
 <body>
@@ -637,13 +648,13 @@ function dataCard(st){
   rows.sort((a,b)=>b.size-a.size);
   const max=Math.max(1,...rows.map(r=>r.size));
   const meta=rows.find(r=>r.name==='metadata');
-  const body = hasSubs || dbs.length ? `<table style="margin-top:6px">${rows.map(r=>`<tr title="${esc(r.desc)}">
-      <td style="white-space:nowrap">${esc(r.name)}${r.cls==='bad'?' <span class="pill bad">ne dirati</span>':''}<div class="sub" style="font-size:11.5px">${esc(r.desc)}</div></td>
-      <td style="width:35%"><div class="sizebar"><div class="bar"><i style="width:${(r.size/max*100).toFixed(1)}%"></i></div></div></td>
-      <td class="num">${fmt(r.size)}</td></tr>`).join('')}</table>`
+  const body = hasSubs || dbs.length ? `<div class="dt-wrap"><table class="dtable">${rows.map(r=>`<tr title="${esc(r.desc)}">
+      <td class="dt-name">${esc(r.name)}${r.cls==='bad'?' <span class="pill bad">ne dirati</span>':''}<div class="sub" style="font-size:11.5px">${esc(r.desc)}</div></td>
+      <td class="dt-bar"><div class="bar"><i style="width:${(r.size/max*100).toFixed(1)}%"></i></div></td>
+      <td class="num dt-size">${fmt(r.size)}</td></tr>`).join('')}</table></div>`
     : '<p class="sub">Podjela po podmapama nije dostupna.</p>';
   const sumTxt = total!=null ? `Baza ${fmt(dbSum)}${meta?` · metadata ${fmt(meta.size)}`:''} · ostalo ${fmt(Math.max(0,total-dbSum-(meta?meta.size:0)))}` : '';
-  return `<div class="card" style="grid-column:span 2;min-width:0"><h3>Jellyfin data mapa <span class="pill" style="float:right">samo pregled</span></h3>
+  return `<div class="card datacard"><h3>Jellyfin data mapa <span class="pill" style="float:right">samo pregled</span></h3>
     <div class="big">${total==null?'<span class="muted">–</span>':fmt(total)}</div><div class="sub">${sumTxt}</div>
     <p class="sub" style="margin:10px 0 4px">Sadržaj mape <code>${esc(st.paths.data||'')}</code>, od najvećeg. Baza se nikad ne dira. Metadata se čisti samo kroz siročad (dolje), a za trickplay i keyframes vidi napomenu.</p>
     ${body}
