@@ -581,6 +581,7 @@ function renderJc(){
   const notes=[];
   if(st.error) notes.push(`<div class="note warn">${esc(st.error)}</div>`);
   if(!st.writable && !st.error) notes.push(`<div class="note warn">SSH korisnik nema pravo pisanja u <code>${esc(st.paths.config)}</code>, pa čišćenje neće raditi. Pokreni LXC skriptu ponovno: ona za korisnika bez root prava postavlja ograničeni pomoćni program (jellyclean-helper).</div>`);
+  if(st.helper_outdated) notes.push(`<div class="note warn">Pomoćni program <code>jellyclean-helper</code> na ${esc(st.host||'Jellyfin računalu')} je stariji (verzija ${st.helper_version??'1'}, treba ${st.helper_expected}), pa neki podaci nedostaju. Osvježi ga na Proxmox hostu naredbom <code>update-lxc.sh</code>; tražit će sudo lozinku.</div>`);
   if(!JC.allow_delete) notes.push('<div class="note">Brisanje je isključeno (ALLOW_DELETE=false) – samo pregled.</div>');
   $('#jc-notes').innerHTML=notes.join('');
   $('#jc-head').innerHTML = `<b>${esc(st.host||JC.ssh)}</b> · ${esc(st.paths.config)} · izmjereno ${new Date(st.time).toLocaleString('hr-HR')}` +
@@ -598,7 +599,7 @@ function renderJc(){
     card('Ostatak cachea','sigurno','ok',other,Math.max(0,fc('cache')-fc('images')-fc('transcodes')),'Sve ostalo u <code>cache</code> (privremene datoteke, omoti, fontovi…). Ponovno se stvara po potrebi.', act('cache_other',0,'Očisti')),
     card('Logovi','sigurno','ok',sz('log'),fc('log'),`Jellyfin i FFmpeg logovi (<code>log</code>). Stariji od 7 dana: ${fmt(logAge['7']||0)}, od 30 dana: ${fmt(logAge['30']||0)}.${st.log_oldest?` Najstariji je od ${new Date(st.log_oldest*1000).toLocaleDateString('hr-HR')}`:''}`, act('logs',14,'Obriši')),
     card('Metadata','oprez','warn',sz('metadata'),0,`Preuzeti posteri, pozadine i slike glumaca (<code>data/metadata</code>). Biblioteka: ${fmt(sz('metalib')||0)}, glumci (People): ${fmt(sz('people')||0)}. <b>Ne briše se u cijelosti</b>, nego samo siročad (dolje).`, ''),
-    card('Baza i ostali podaci','ne dirati','bad',sz('data'),0,'Jellyfin baza i postavke (<code>data</code>). Samo za informaciju, JellyClean ovdje ništa ne briše.', '', st.dbs.length?'<div class="sub">'+st.dbs.map(d=>`${esc(d.name)}: ${fmt(d.size)}`).join('<br>')+'</div>':''),
+    dataCard(st),
   ].join('');
   $$('[data-jca]').forEach(b=>b.onclick=()=>jcClean(b.dataset.jca));
   const subT = (arr)=>{ const m=Math.max(1,...arr.map(x=>x.size)); return arr.length?'<table>'+arr.slice(0,15).map(x=>`<tr><td>${esc(x.name)}</td><td><div class="sizebar"><div class="bar"><i style="width:${x.size/m*100}%"></i></div></div></td><td class="num">${fmt(x.size)}</td></tr>`).join('')+'</table>':'<div class="muted">–</div>'; };
@@ -607,6 +608,47 @@ function renderJc(){
   $('#jc-orph').disabled = !JC.jellyfin;
   if(!JC.jellyfin) $('#jc-orph-sum').textContent='Za analizu siročadi treba Jellyfin API ključ.';
   if(JC.orphans) renderOrphans(JC.orphans);
+}
+
+const DATA_DESC = {
+  metadata:'posteri, pozadine i slike glumaca (vidi pločicu Metadata)',
+  data:'baza i korisnički podaci', trickplay:'sličice za premotavanje (trickplay)',
+  keyframes:'ključni okviri videa (brže premotavanje)', subtitles:'titlovi izvađeni iz video datoteka',
+  attachments:'fontovi i privici izvađeni iz MKV-a', plugins:'dodaci (pluginovi)', root:'postavke biblioteka',
+  collections:'kolekcije', playlists:'popisi za reprodukciju', ScheduledTasks:'povijest zakazanih zadataka',
+  splashscreen:'pozadina početnog zaslona', transcodes:'transkodiranje', cache:'cache', lyrics:'tekstovi pjesama',
+  backups:'sigurnosne kopije baze', 'media':'medijski podaci'
+};
+function dataCard(st){
+  const L=st.locations||{}, total=(L.data&&L.data.size>=0)?L.data.size:null;
+  const dbs=st.dbs||[], dbSum=dbs.reduce((a,d)=>a+d.size,0);
+  const subs=(st.subs.data||[]).slice();
+  const hasSubs = subs.length>0;
+  // redovi: baza (zbroj .db/-wal/-shm), zatim podmape (metadata, trickplay, …), datoteke u korijenu
+  const rows=[];
+  if(dbs.length) rows.push({name:'Baza', size:dbSum, desc:dbs.map(d=>`${d.name} ${fmt(d.size)}`).join(', '), cls:'bad'});
+  for(const x of subs){
+    const isDb = x.name==='data';
+    const sizeAdj = isDb ? Math.max(0, x.size - dbSum) : x.size;
+    if(isDb && sizeAdj < 1024*1024) continue;   // data/ sadrži samo bazu - već prikazano
+    rows.push({name: isDb?'data (bez baze)':x.name, size:sizeAdj, desc:DATA_DESC[x.name]||'', cls: x.name==='metadata'?'warn':''});
+  }
+  if(st.data_files>0) rows.push({name:'datoteke u korijenu', size:st.data_files, desc:'', cls:''});
+  rows.sort((a,b)=>b.size-a.size);
+  const max=Math.max(1,...rows.map(r=>r.size));
+  const meta=rows.find(r=>r.name==='metadata');
+  const body = hasSubs || dbs.length ? `<table style="margin-top:6px">${rows.map(r=>`<tr title="${esc(r.desc)}">
+      <td style="white-space:nowrap">${esc(r.name)}${r.cls==='bad'?' <span class="pill bad">ne dirati</span>':''}<div class="sub" style="font-size:11.5px">${esc(r.desc)}</div></td>
+      <td style="width:35%"><div class="sizebar"><div class="bar"><i style="width:${(r.size/max*100).toFixed(1)}%"></i></div></div></td>
+      <td class="num">${fmt(r.size)}</td></tr>`).join('')}</table>`
+    : '<p class="sub">Podjela po podmapama nije dostupna.</p>';
+  const sumTxt = total!=null ? `Baza ${fmt(dbSum)}${meta?` · metadata ${fmt(meta.size)}`:''} · ostalo ${fmt(Math.max(0,total-dbSum-(meta?meta.size:0)))}` : '';
+  return `<div class="card" style="grid-column:span 2;min-width:0"><h3>Jellyfin data mapa <span class="pill" style="float:right">samo pregled</span></h3>
+    <div class="big">${total==null?'<span class="muted">–</span>':fmt(total)}</div><div class="sub">${sumTxt}</div>
+    <p class="sub" style="margin:10px 0 4px">Sadržaj mape <code>${esc(st.paths.data||'')}</code>, od najvećeg. Baza se nikad ne dira. Metadata se čisti samo kroz siročad (dolje), a za trickplay i keyframes vidi napomenu.</p>
+    ${body}
+    ${rows.some(r=>/trickplay|keyframes/.test(r.name)&&r.size>500*1024*1024)?'<div class="note" style="margin-top:10px">Trickplay i keyframes Jellyfin stvara za brže premotavanje. Ako ti to ne treba, isključi ih u Jellyfinu (Nadzorna ploča → Biblioteke → Trickplay, odnosno postavke biblioteke). Nakon toga se mogu obrisati.</div>':''}
+  </div>`;
 }
 async function jcClean(a){
   const inp=$('#jc-d-'+a), days = inp?Number(inp.value||0):0;

@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -901,6 +901,8 @@ import subprocess
 HEX32 = re.compile(r"^[0-9a-f]{32}$")
 
 
+HELPER_VERSION = 2
+
 HELPER_BODY = r'''
 set -u
 export LC_ALL=C
@@ -909,6 +911,7 @@ cnt() { if [ -e "$1" ]; then find "$1" -type f 2>/dev/null | wc -l; else echo 0;
 okid() { echo "$1" | grep -Eq '^[0-9a-f]{2}/[0-9a-f]{32}$' && [ "${1%%/*}" = "$(echo "${1#*/}" | cut -c1-2)" ]; }
 
 op_status() {
+  echo "HVER __HVER__"
   [ -d "$C" ] || { echo "ERR Mapa $C ne postoji na $(hostname)"; return; }
   [ -r "$C" ] || { echo "ERR Nema prava čitanja $C"; return; }
   echo "HOST $(hostname)"
@@ -926,7 +929,13 @@ op_status() {
     case "$d" in "$CACHE"/*) k=cache;; *) k=metadata;; esac
     echo "SUB $k $(sz "$d") $(basename "$d")"
   done
-  for f in "$DATA"/*.db "$DATA"/data/*.db; do [ -f "$f" ] && echo "DB $(sz "$f") $(basename "$f")"; done
+  for f in "$DATA"/*.db "$DATA"/*.db-wal "$DATA"/*.db-shm "$DATA"/data/*.db "$DATA"/data/*.db-wal "$DATA"/data/*.db-shm; do
+    [ -f "$f" ] && echo "DB $(sz "$f") $(basename "$f")"
+  done
+  if [ -d "$DATA" ]; then
+    for d in "$DATA"/*/; do [ -d "$d" ] && echo "SUB data $(sz "$d") $(basename "$d")"; done
+    t=$(find "$DATA" -maxdepth 1 -type f ! -name '*.db' ! -name '*.db-wal' ! -name '*.db-shm' -printf '%s\n' 2>/dev/null | awk '{s+=$1} END{print s+0}'); echo "DATAFILES $t"
+  fi
   if [ -d "$LOG" ]; then
     for n in 7 14 30; do
       s=$(find "$LOG" -type f -mtime +$n -printf '%s\n' 2>/dev/null | awk '{s+=$1} END{print s+0}')
@@ -982,6 +991,7 @@ main() {
   op=${1:-}; [ $# -gt 0 ] && shift
   case "$op" in
     status) op_status ;;
+    version) echo "HVER __HVER__" ;;
     clean) op_clean "$@" ;;
     listmeta) op_listmeta ;;
     dumeta) op_dumeta ;;
@@ -1000,7 +1010,7 @@ def helper_script(standalone=True):
             "# cachea, logova i siročadi u metadata/library unutar ovih putanja:\n"
             f"C={q(CFG['jf_config'])}\nCACHE={q(CFG['jf_cache'])}\nLOG={q(CFG['jf_log'])}\n"
             f"DATA={q(CFG['jf_data'])}\nMETA={q(CFG['jf_metadata'])}\n")
-    return head + HELPER_BODY + ('main "$@"\n' if standalone else "")
+    return head + HELPER_BODY.replace("__HVER__", str(HELPER_VERSION)) + ('main "$@"\n' if standalone else "")
 
 
 class SSHError(Exception):
@@ -1070,7 +1080,9 @@ class JFConfig:
         st = {"host": None, "locations": {}, "subs": {"cache": [], "metadata": []}, "dbs": [],
               "log_age": {}, "log_oldest": 0, "disk": None, "writable": False, "error": None,
               "time": now_iso(), "paths": self.paths(),
-              "mode": "helper" if CFG["ssh_helper"] else ("sudo" if CFG["ssh_sudo"] else "direct")}
+              "mode": "helper" if CFG["ssh_helper"] else ("sudo" if CFG["ssh_sudo"] else "direct"),
+              "helper_version": None, "helper_expected": HELPER_VERSION, "helper_outdated": False,
+              "data_files": 0}
         try:
             out = self.run("status")
         except SSHError as e:
@@ -1098,12 +1110,18 @@ class JFConfig:
                     st["log_oldest"] = int(parts[1])
                 elif k == "DF":
                     st["disk"] = {"total": int(parts[1]), "used": int(parts[2]), "free": int(parts[3])}
+                elif k == "HVER":
+                    st["helper_version"] = int(parts[1])
+                elif k == "DATAFILES":
+                    st["data_files"] = int(parts[1])
                 elif k == "WRITE":
                     st["writable"] = parts[1] == "1"
             except (ValueError, IndexError):
                 pass
         for v in st["subs"].values():
             v.sort(key=lambda x: -x["size"])
+        if st["mode"] == "helper" and st["helper_version"] != HELPER_VERSION:
+            st["helper_outdated"] = True
         with self.lock:
             self.status = st
         return st

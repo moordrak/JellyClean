@@ -18,7 +18,36 @@ if (( ${#IDS[@]} == 0 )); then
 fi
 (( ${#IDS[@]} )) || { echo "Nije pronađen JellyClean kontejner. Upotreba: $0 <ID>"; exit 1; }
 
-TMP=$(mktemp); trap 'rm -f "$TMP"' EXIT
+TMP=$(mktemp); T=$(mktemp -d); trap 'rm -rf "$TMP" "$T"' EXIT
+
+# Ako JellyClean na Jellyfin računalu koristi ograničeni pomoćni program (jellyclean-helper),
+# provjeri mu verziju i po potrebi ga osvježi (traži sudo lozinku SSH korisnika, ne sprema se).
+refresh_helper() {
+  local id=$1 envf H HOST SUSER PORT KEY OPTS want have PW out
+  envf=$(pct exec "$id" -- cat /etc/jellyclean.env 2>/dev/null) || return 0
+  get() { echo "$envf" | sed -n "s/^$1=//p" | head -1 | sed 's/^"//;s/"$//'; }
+  H=$(get JF_SSH_HELPER); [[ -n "$H" ]] || return 0
+  HOST=$(get JF_SSH_HOST); SUSER=$(get JF_SSH_USER); PORT=$(get JF_SSH_PORT); KEY=$(get JF_SSH_KEY)
+  OPTS="-p ${PORT:-22} -i ${KEY:-/var/lib/jellyclean/ssh/id_ed25519} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/var/lib/jellyclean/ssh/known_hosts -o ConnectTimeout=10 -o LogLevel=ERROR"
+  want=$(pct exec "$id" -- bash -c 'cd /opt/jellyclean && python3 -c "import app; print(app.HELPER_VERSION)"' 2>/dev/null | tr -d '\r' || true)
+  [[ -n "$want" ]] || return 0
+  have=$(pct exec "$id" -- bash -c "ssh $OPTS '$SUSER@$HOST' 'sudo -n $H version' 2>/dev/null" | sed -n 's/^HVER //p' | tr -d '\r' || true)
+  if [[ "$have" == "$want" ]]; then echo "✔ pomoćni program na $HOST je ažuran (v$have)"; return 0; fi
+  echo "➜ pomoćni program na $HOST je zastario (v${have:-1} → v$want) i treba ga osvježiti."
+  pct exec "$id" -- bash -c 'set -a; . /etc/jellyclean.env; set +a; cd /opt/jellyclean && python3 app.py --helper-script' > "$T/helper.sh" 2>/dev/null || true
+  grep -q '^main "\$@"' "$T/helper.sh" || { echo "✘ generiranje pomoćnog programa nije uspjelo"; return 0; }
+  for _ in 1 2 3; do
+    printf 'Sudo lozinka za %s@%s (Enter = preskoči): ' "$SUSER" "$HOST"; IFS= read -r -s PW </dev/tty || PW=""; echo
+    [[ -n "$PW" ]] || { echo "  preskočeno - JellyClean će prikazivati upozorenje dok se ne osvježi"; return 0; }
+    { printf '%s\n' "$PW"; echo 'set -e'; echo "cat > $H.new <<'JC_HELPER_EOF'"; cat "$T/helper.sh"; echo 'JC_HELPER_EOF'
+      echo "chown root:root $H.new && chmod 755 $H.new && mv -f $H.new $H && echo HELPER_OK"; } > "$T/payload"
+    PW=""; chmod 600 "$T/payload"
+    pct push "$id" "$T/payload" /root/jc-payload --perms 600; rm -f "$T/payload"
+    out=$(pct exec "$id" -- bash -c "ssh $OPTS '$SUSER@$HOST' \"sudo -k -S -p '' sh -s\" < /root/jc-payload 2>/dev/null; rm -f /root/jc-payload" || true)
+    if [[ "$out" == *HELPER_OK* ]]; then echo "✔ pomoćni program osvježen (v$want)"; return 0; fi
+    echo "  ✘ nije uspjelo (kriva lozinka?)"
+  done
+}
 cat > "$TMP" <<'UPDEOF'
 #!/usr/bin/env bash
 # JellyClean - nadogradnja na najnoviju verziju (pokreni unutar kontejnera kao root)
@@ -71,5 +100,9 @@ for id in "${IDS[@]}"; do
   if ! pct exec "$id" -- test -f /opt/jellyclean/app.py; then echo "✘ u kontejneru nema /opt/jellyclean/app.py - preskačem"; continue; fi
   pct exec "$id" -- bash -c 'command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)'
   pct push "$id" "$TMP" /usr/local/bin/jellyclean-update --perms 755
-  pct exec "$id" -- env GH_TOKEN="${GH_TOKEN:-}" /usr/local/bin/jellyclean-update || echo "✘ nadogradnja kontejnera $id nije uspjela"
+  if pct exec "$id" -- env GH_TOKEN="${GH_TOKEN:-}" /usr/local/bin/jellyclean-update; then
+    refresh_helper "$id"
+  else
+    echo "✘ nadogradnja kontejnera $id nije uspjela"
+  fi
 done
