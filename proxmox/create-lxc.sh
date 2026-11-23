@@ -315,15 +315,15 @@ pristupa preko SSH-a. Skripta će:
   • u kontejneru napraviti SSH ključ (samo za JellyClean)
   • postaviti ga na Jellyfin računalo (upišeš lozinku jednom ili ga dodaš ručno)
   • sama pronaći gdje je Jellyfin config (docker inspect ili standardna instalacija)
-
-Na Jellyfin računalu se ništa ne instalira." y; then
+  • ako SSH korisnik nema prava na Jellyfin mape, ponuditi ograničeni pomoćni
+    program (uz sudo lozinku, koja se koristi samo tijekom postavljanja)" y; then
   SSH_ON=1
   def_host=""
   [[ -n "$JF_URL" ]] && def_host=$(echo "$JF_URL" | sed -E 's#^https?://##; s#[:/].*$##')
   ask SSH_HOST "IP adresa ili ime računala na kojem radi Jellyfin (VM s Dockerom)
 
 Ako Jellyfinu pristupaš preko nginxa, ovdje upiši adresu VM-a, ne nginxa." "$def_host"
-  ask SSH_USER "SSH korisnik (root ili korisnik sa sudo/docker pravima)" "$SSH_USER"
+  ask SSH_USER "SSH korisnik na tom računalu (npr. root ili tvoj korisnik; root ovlasti nisu nužne)" "$SSH_USER"
   ask SSH_PORT "SSH port" "$SSH_PORT"
   [[ -n "$SSH_HOST" && "$SSH_PORT" =~ ^[0-9]+$ ]] || { warn "Neispravni SSH podaci - preskačem."; SSH_ON=0; }
 fi
@@ -710,11 +710,62 @@ if (( ${#WFAIL[@]} )); then
   yesno "Korisnik $RUN_USER (UID $RUN_UID) ne može pisati u:\n\n$(printf '  %s\n' "${WFAIL[@]}")\n\nPregled će raditi, ali brisanje u tim mapama neće.\nRješenje je na NAS-u: dozvoli pisanje korisniku $RUN_UID za IP kontejnera,\nili provjeri squash postavke NFS exporta.\n\nNastaviti?" y || die "Prekinuto."
 fi
 
+# ========================================================= INSTALACIJA ===
+info "Instaliram JellyClean u $APP_DIR…"
+case $SRC in
+  local)
+    tar -C "$LOCAL_SRC" -czf "$TMPD/src.tgz" --exclude=.git --exclude=data --exclude=__pycache__ .
+    pct push "$CTID" "$TMPD/src.tgz" /tmp/jellyclean-src.tgz
+    ctx "mkdir -p $APP_DIR && tar -xzf /tmp/jellyclean-src.tgz -C $APP_DIR && rm /tmp/jellyclean-src.tgz" ;;
+  git)
+    pct exec "$CTID" -- git clone -q --depth 1 "$REPO_URL" "$APP_DIR" ;;
+  token)
+    AUTH_URL=${REPO_URL/https:\/\//https://x-access-token:${GH_TOKEN}@}
+    pct exec "$CTID" -- bash -c "git clone -q --depth 1 '$AUTH_URL' $APP_DIR && git -C $APP_DIR remote set-url origin '$REPO_URL'" ;;
+esac
+pct exec "$CTID" -- test -f "$APP_DIR/app.py" || die "Instalacija koda nije uspjela."
+ok "Kod instaliran."
+
 # ================================================ JELLYFIN CONFIG (SSH) ===
-JF_SSH_SUDO=false; JFC_CONFIG=""; JFC_CACHE=""; JFC_LOG=""; JFC_DATA=""; JFC_META=""
+JF_SSH_SUDO=false; JF_SSH_HELPER=""; JFC_CONFIG=""; JFC_CACHE=""; JFC_LOG=""; JFC_DATA=""; JFC_META=""
 KEY=/var/lib/jellyclean/ssh/id_ed25519
-SSH_OPTS="-p $SSH_PORT -i $KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/var/lib/jellyclean/ssh/known_hosts -o ConnectTimeout=10"
+HELPER_PATH=/usr/local/sbin/jellyclean-helper
+SSH_OPTS="-p $SSH_PORT -i $KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/var/lib/jellyclean/ssh/known_hosts -o ConnectTimeout=10 -o LogLevel=ERROR"
+SUDOPW=""; PRIV=""
 cssh() { pct exec "$CTID" -- bash -c "ssh $SSH_OPTS -o BatchMode=yes '$SSH_USER@$SSH_HOST' $1"; }
+# rsh FILE MODE  -> izvrši lokalnu sh skriptu na Jellyfin računalu (plain | sudo | sudopw)
+rsh() {
+  local f=$1 m=$2 rc
+  case $m in
+    plain)  cp "$f" "$TMPD/payload"; rc="sh -s" ;;
+    sudo)   cp "$f" "$TMPD/payload"; rc="sudo -n sh -s" ;;
+    sudopw) { printf '%s\n' "$SUDOPW"; cat "$f"; } > "$TMPD/payload"; rc="sudo -k -S -p '' sh -s" ;;
+  esac
+  chmod 600 "$TMPD/payload"
+  pct push "$CTID" "$TMPD/payload" /root/jc-payload --perms 600; rm -f "$TMPD/payload"
+  pct exec "$CTID" -- bash -c "ssh $SSH_OPTS -o BatchMode=yes '$SSH_USER@$SSH_HOST' \"$rc\" < /root/jc-payload 2>/root/jc-payload.err; r=\$?; rm -f /root/jc-payload; exit \$r"
+}
+# root_mode -> postavi PRIV na sudo ili sudopw (pita lozinku jednom); vrati 1 ako nije moguće
+root_mode() {
+  [[ -n "$PRIV" ]] && return 0
+  if cssh "'sudo -n true'" 2>/dev/null; then PRIV=sudo; return 0; fi
+  msg "Za ovaj korak trebaju root ovlasti na $SSH_HOST.
+
+Korisnik $SSH_USER nema sudo bez lozinke, pa skripta treba njegovu sudo
+lozinku (onu koju upisuješ za 'sudo -i'). Lozinka se koristi SAMO sada,
+tijekom postavljanja, i nigdje se ne sprema."
+  local t
+  for t in 1 2 3; do
+    ask_secret SUDOPW "Sudo lozinka za $SSH_USER@$SSH_HOST (prazno = preskoči)" ""
+    [[ -n "$SUDOPW" ]] || return 1
+    printf 'echo JC_ROOT_OK $(id -u)\n' > "$TMPD/t.sh"
+    local r; r=$(rsh "$TMPD/t.sh" sudopw 2>/dev/null || true)
+    if [[ "$r" == *"JC_ROOT_OK 0"* ]]; then PRIV=sudopw; ok "sudo lozinka prihvaćena."; return 0; fi
+    warn "sudo lozinka nije prihvaćena."
+  done
+  SUDOPW=""; return 1
+}
+
 if (( SSH_ON )); then
   info "Pripremam SSH ključ za pristup Jellyfin računalu…"
   ctx "mkdir -p /var/lib/jellyclean/ssh && chmod 700 /var/lib/jellyclean/ssh && [ -f $KEY ] || ssh-keygen -q -t ed25519 -N '' -C 'jellyclean@$CT_HOST' -f $KEY"
@@ -726,23 +777,21 @@ if (( SSH_ON )); then
 
 Ključ je napravljen samo za JellyClean. Javni dio treba dodati u
 ~$SSH_USER/.ssh/authorized_keys na Jellyfin računalu." "lozinka" \
-      "lozinka" "Automatski - upisat ću lozinku za $SSH_USER@$SSH_HOST jednom (ssh-copy-id)" \
+      "lozinka" "Automatski - upisat ću SSH lozinku za $SSH_USER@$SSH_HOST jednom (ssh-copy-id)" \
       "rucno" "Ručno - prikaži javni ključ, sam ću ga dodati" \
       "preskoci" "Preskoči - bez čišćenja Jellyfin configa"
     case $KEYMODE in
       lozinka)
-        echo; info "Upiši lozinku za $SSH_USER@$SSH_HOST (lozinka se ne sprema):"
+        echo; info "Upiši SSH lozinku za $SSH_USER@$SSH_HOST (ne sprema se):"
         pct exec "$CTID" -- ssh-copy-id -i "$KEY.pub" -p "$SSH_PORT" -o StrictHostKeyChecking=accept-new \
-          -o UserKnownHostsFile=/var/lib/jellyclean/ssh/known_hosts "$SSH_USER@$SSH_HOST" || warn "ssh-copy-id nije uspio." ;;
+          -o UserKnownHostsFile=/var/lib/jellyclean/ssh/known_hosts "$SSH_USER@$SSH_HOST" <&3 || warn "ssh-copy-id nije uspio." ;;
       rucno)
         msg "Dodaj ovaj red u ~$SSH_USER/.ssh/authorized_keys na $SSH_HOST:
 
 $PUBKEY
 
-Npr. na Jellyfin računalu:
-  echo '$PUBKEY' >> ~/.ssh/authorized_keys
-
-Kad je dodano, nastavi."
+Npr. na Jellyfin računalu kao $SSH_USER:
+  mkdir -p ~/.ssh && echo '$PUBKEY' >> ~/.ssh/authorized_keys"
         pause ;;
       *) SSH_ON=0 ;;
     esac
@@ -753,21 +802,21 @@ Kad je dodano, nastavi."
     fi
   fi
 fi
+
 if (( SSH_ON )); then
   ok "SSH pristup na $SSH_USER@$SSH_HOST radi."
-  SUDO=""
-  if [[ "$SSH_USER" != root ]]; then
-    if cssh "'sudo -n true'" 2>/dev/null; then SUDO="sudo -n "; JF_SSH_SUDO=true; ok "sudo bez lozinke dostupan."
-    else warn "$SSH_USER nema sudo bez lozinke - radit će samo ako ima prava na Jellyfin mape (npr. docker grupa ne pomaže za datoteke)."; fi
-  fi
-  info "Tražim Jellyfin config na $SSH_HOST…"
+  [[ "$SSH_USER" == root ]] && PRIV=plain
+
+  # ---- 1) gdje je Jellyfin config
   cat > "$TMPD/jfdetect.sh" <<'DETEOF'
 found=0
 if command -v docker >/dev/null 2>&1; then
+  if ! docker ps >/dev/null 2>&1; then echo "DOCKERPERM"; fi
   for id in $(docker ps -a --format '{{.ID}} {{.Image}} {{.Names}}' 2>/dev/null | grep -i jellyfin | awk '{print $1}'); do
     name=$(docker inspect -f '{{.Name}}' "$id" | sed 's#^/##'); img=$(docker inspect -f '{{.Config.Image}}' "$id")
     cfg=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/config"}}{{.Source}}{{end}}{{end}}' "$id")
     cch=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/cache"}}{{.Source}}{{end}}{{end}}' "$id")
+    puid=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$id" | sed -n 's/^PUID=//p' | head -1)
     [ -n "$cfg" ] || continue
     found=1
     echo "SRC docker:$name ($img)"
@@ -776,6 +825,7 @@ if command -v docker >/dev/null 2>&1; then
     if [ -d "$cfg/data/metadata" ]; then echo "DATA $cfg/data"; elif [ -d "$cfg/metadata" ]; then echo "DATA $cfg"; else echo "DATA $cfg/data"; fi
     if [ -n "$cch" ]; then echo "CACHE $cch"; else echo "CACHE $cfg/cache"; fi
     echo "LOG $cfg/log"
+    [ -n "$puid" ] && echo "PUID $puid"
     break
   done
 fi
@@ -785,14 +835,18 @@ if [ $found = 0 ] && [ -d /var/lib/jellyfin ]; then
 fi
 [ $found = 1 ] || echo "NONE"
 DETEOF
-  pct push "$CTID" "$TMPD/jfdetect.sh" /root/jc-jfdetect.sh
-  DET=$(pct exec "$CTID" -- bash -c "ssh $SSH_OPTS -o BatchMode=yes '$SSH_USER@$SSH_HOST' '${SUDO}sh -s' < /root/jc-jfdetect.sh" 2>/dev/null || true)
-  ctx "rm -f /root/jc-jfdetect.sh" || true
+  info "Tražim Jellyfin config na $SSH_HOST…"
+  DET=$(rsh "$TMPD/jfdetect.sh" "${PRIV:-plain}" 2>/dev/null || true)
+  if [[ "$DET" == *DOCKERPERM* && "$DET" != *CONFIG* && -z "$PRIV" ]]; then
+    info "$SSH_USER nema pristup Dockeru - za otkrivanje trebaju root ovlasti."
+    if root_mode; then DET=$(rsh "$TMPD/jfdetect.sh" "$PRIV" 2>/dev/null || true); fi
+  fi
   JSRC=$(echo "$DET" | sed -n 's/^SRC //p' | head -1)
   JFC_CONFIG=$(echo "$DET" | sed -n 's/^CONFIG //p' | head -1)
   JFC_DATA=$(echo "$DET" | sed -n 's/^DATA //p' | head -1)
   JFC_CACHE=$(echo "$DET" | sed -n 's/^CACHE //p' | head -1)
   JFC_LOG=$(echo "$DET" | sed -n 's/^LOG //p' | head -1)
+  JPUID=$(echo "$DET" | sed -n 's/^PUID //p' | head -1)
   [[ -n "$JFC_DATA" ]] && JFC_META="$JFC_DATA/metadata"
   if [[ -n "$JFC_CONFIG" ]]; then
     yesno "Pronađen Jellyfin: $JSRC
@@ -818,29 +872,83 @@ Prihvatiti?" y || JFC_CONFIG=""
       JFC_META="$JFC_DATA/metadata"
     else SSH_ON=0; fi
   fi
-  if (( SSH_ON )); then
-    if cssh "'${SUDO}test -w \"$JFC_CONFIG\"'" 2>/dev/null; then ok "Jellyfin config: pristup i pravo pisanja rade."
-    else warn "$SSH_USER nema pravo pisanja u $JFC_CONFIG na $SSH_HOST - pregled radi, čišćenje neće."; fi
-  fi
 fi
-if (( ! SSH_ON )); then SSH_HOST=""; JFC_CONFIG=""; fi
-ctx "chown -R $RUN_UID:$RUN_GID /var/lib/jellyclean 2>/dev/null || true"
 
-# ========================================================= INSTALACIJA ===
-info "Instaliram JellyClean u $APP_DIR…"
-case $SRC in
-  local)
-    tar -C "$LOCAL_SRC" -czf "$TMPD/src.tgz" --exclude=.git --exclude=data --exclude=__pycache__ .
-    pct push "$CTID" "$TMPD/src.tgz" /tmp/jellyclean-src.tgz
-    ctx "mkdir -p $APP_DIR && tar -xzf /tmp/jellyclean-src.tgz -C $APP_DIR && rm /tmp/jellyclean-src.tgz" ;;
-  git)
-    pct exec "$CTID" -- git clone -q --depth 1 "$REPO_URL" "$APP_DIR" ;;
-  token)
-    AUTH_URL=${REPO_URL/https:\/\//https://x-access-token:${GH_TOKEN}@}
-    pct exec "$CTID" -- bash -c "git clone -q --depth 1 '$AUTH_URL' $APP_DIR && git -C $APP_DIR remote set-url origin '$REPO_URL'" ;;
-esac
-pct exec "$CTID" -- test -f "$APP_DIR/app.py" || die "Instalacija koda nije uspjela."
-ok "Kod instaliran."
+if (( SSH_ON )); then
+  # ---- 2) način pristupa: izravno, ili ograničeni helper preko sudo
+  q() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+  cat > "$TMPD/access.sh" <<EOF
+C=$(q "$JFC_CONFIG"); CACHE=$(q "$JFC_CACHE"); LOG=$(q "$JFC_LOG"); META=$(q "$JFC_META")
+[ -d "\$C" ] || { echo "NOCFG"; exit 0; }
+bad=\$(find "\$CACHE" "\$LOG" "\$META/library" -type d \( ! -writable -o ! -readable \) -print -quit 2>/dev/null)
+nr=\$( [ -r "\$C" ] && echo 1 || echo 0 )
+if [ -z "\$bad" ] && [ "\$nr" = 1 ]; then echo "DIRECT_OK"; else echo "DIRECT_NO \${bad:-\$C} \$(stat -c '%U(%u)' "\${bad:-\$C}" 2>/dev/null)"; fi
+echo "ME \$(id -un)(\$(id -u))"
+EOF
+  ACC=$(rsh "$TMPD/access.sh" plain 2>/dev/null || true)
+  if [[ "$ACC" == *NOCFG* && "$SSH_USER" != root ]]; then ACC="DIRECT_NO $JFC_CONFIG ?"; fi
+  if [[ "$SSH_USER" == root ]]; then
+    ok "Pristup kao root - nisu potrebne dodatne ovlasti."
+  elif [[ "$ACC" == *DIRECT_OK* ]]; then
+    ok "$SSH_USER već ima pravo čitanja i brisanja u Jellyfin cache/log/metadata mapama - sudo nije potreban."
+  else
+    BADP=$(echo "$ACC" | sed -n 's/^DIRECT_NO //p')
+    ME=$(echo "$ACC" | sed -n 's/^ME //p')
+    msg "Korisnik ${ME:-$SSH_USER} nema prava na sve Jellyfin mape
+(npr. ${BADP:-$JFC_CONFIG}${JPUID:+; Jellyfin kontejner radi s PUID=$JPUID}).
+
+Prijedlog: ograničeni pomoćni program
+  • skripta jednom (uz tvoju sudo lozinku) postavi na $SSH_HOST:
+      $HELPER_PATH                (vlasnik root, nitko ga ne može mijenjati)
+      /etc/sudoers.d/jellyclean   (pravilo, provjereno s visudo)
+  • pravilo dopušta da $SSH_USER bez lozinke pokreće SAMO taj program
+  • program zna samo: izmjeriti mape i obrisati cache, stare logove
+    i siročad u metadata, i to samo u ovim putanjama:
+      $JFC_CACHE
+      $JFC_LOG
+      $JFC_META/library
+  • ne može pokrenuti ništa drugo, niti dirati bazu ili postavke
+
+Tako JellyClean (i njegov SSH ključ) nema potpuni root na tom računalu."
+    menu ACCMODE "Kako dati JellyCleanu pristup Jellyfin mapama?" "helper" \
+      "helper" "Ograničeni pomoćni program + sudoers pravilo (preporučeno)" \
+      "preskoci" "Preskoči - bez čišćenja Jellyfin configa"
+    if [[ "$ACCMODE" == helper ]] && root_mode; then
+      info "Postavljam $HELPER_PATH na $SSH_HOST…"
+      pct exec "$CTID" -- env JF_CONFIG_PATH="$JFC_CONFIG" JF_CACHE_PATH="$JFC_CACHE" JF_LOG_PATH="$JFC_LOG" \
+        JF_DATA_PATH="$JFC_DATA" JF_METADATA_PATH="$JFC_META" python3 "$APP_DIR/app.py" --helper-script > "$TMPD/helper.sh"
+      grep -q '^main "\$@"' "$TMPD/helper.sh" || die "Generiranje pomoćnog programa nije uspjelo."
+      {
+        echo 'set -e'
+        echo "cat > $HELPER_PATH.new <<'JC_HELPER_EOF'"
+        cat "$TMPD/helper.sh"
+        echo 'JC_HELPER_EOF'
+        echo "chown root:root $HELPER_PATH.new && chmod 755 $HELPER_PATH.new && mv -f $HELPER_PATH.new $HELPER_PATH"
+        echo "printf '%s\n' '# JellyClean: $SSH_USER smije bez lozinke pokretati SAMO jellyclean-helper' '$SSH_USER ALL=(root) NOPASSWD: $HELPER_PATH' > /etc/sudoers.d/jellyclean.new"
+        echo 'chmod 440 /etc/sudoers.d/jellyclean.new'
+        echo 'if visudo -cf /etc/sudoers.d/jellyclean.new >/dev/null; then mv -f /etc/sudoers.d/jellyclean.new /etc/sudoers.d/jellyclean; else rm -f /etc/sudoers.d/jellyclean.new; echo SUDOERS_FAIL; exit 1; fi'
+        echo 'echo HELPER_OK'
+      } > "$TMPD/install-helper.sh"
+      HOUT=$(rsh "$TMPD/install-helper.sh" "$PRIV" 2>/dev/null || true)
+      SUDOPW=""
+      HCHK=$(cssh "'sudo -n $HELPER_PATH status'" 2>/dev/null || true)
+      if [[ "$HOUT" == *HELPER_OK* && "$HCHK" == *"HOST "* ]]; then
+        JF_SSH_HELPER=$HELPER_PATH
+        ok "Pomoćni program radi: $SSH_USER@$SSH_HOST → sudo -n $HELPER_PATH"
+      else
+        warn "Postavljanje pomoćnog programa nije uspjelo${HOUT:+ ($HOUT)}."
+        SSH_ON=0
+      fi
+    else
+      [[ "$ACCMODE" == helper ]] && warn "Bez root ovlasti nije moguće postaviti pomoćni program."
+      SSH_ON=0
+    fi
+  fi
+  SUDOPW=""
+fi
+if (( ! SSH_ON )); then SSH_HOST=""; JFC_CONFIG=""; JF_SSH_HELPER=""; fi
+ctx "chown -R $RUN_UID:$RUN_GID /var/lib/jellyclean 2>/dev/null || true; rm -f /root/jc-payload /root/jc-payload.err"
+
 
 media_env=""; for i in "${!FIN_LABEL[@]}"; do lbl=${FIN_LABEL[$i]//[,=;]/ }; media_env+="${media_env:+,}${lbl}=${FIN_CT[$i]}"; done
 TZV=$(cat /etc/timezone 2>/dev/null || timedatectl show -p Timezone --value 2>/dev/null || echo Europe/Zagreb)
@@ -854,6 +962,7 @@ JF_SSH_USER=$(envq "$SSH_USER")
 JF_SSH_PORT=$(envq "$SSH_PORT")
 JF_SSH_KEY=/var/lib/jellyclean/ssh/id_ed25519
 JF_SSH_SUDO=$JF_SSH_SUDO
+JF_SSH_HELPER=$(envq "$JF_SSH_HELPER")
 JF_CONFIG_PATH=$(envq "$JFC_CONFIG")
 JF_CACHE_PATH=$(envq "$JFC_CACHE")
 JF_LOG_PATH=$(envq "$JFC_LOG")

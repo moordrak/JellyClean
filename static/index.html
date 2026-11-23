@@ -537,7 +537,7 @@ function renderJc(){
   const st=JC.status, L=st.locations||{}, sz=k=>(L[k]&&L[k].size>=0)?L[k].size:null, fc=k=>L[k]?L[k].files:0;
   const notes=[];
   if(st.error) notes.push(`<div class="note warn">${esc(st.error)}</div>`);
-  if(!st.writable && !st.error) notes.push(`<div class="note warn">SSH korisnik nema pravo pisanja u <code>${esc(st.paths.config)}</code>, pa čišćenje neće raditi. Koristi root ili korisnika sa sudo pravima (JF_SSH_SUDO=true).</div>`);
+  if(!st.writable && !st.error) notes.push(`<div class="note warn">SSH korisnik nema pravo pisanja u <code>${esc(st.paths.config)}</code>, pa čišćenje neće raditi. Pokreni LXC skriptu ponovno: ona za korisnika bez root prava postavlja ograničeni pomoćni program (jellyclean-helper).</div>`);
   if(!JC.allow_delete) notes.push('<div class="note">Brisanje je isključeno (ALLOW_DELETE=false) – samo pregled.</div>');
   $('#jc-notes').innerHTML=notes.join('');
   $('#jc-head').innerHTML = `<b>${esc(st.host||JC.ssh)}</b> · ${esc(st.paths.config)} · izmjereno ${new Date(st.time).toLocaleString('hr-HR')}` +

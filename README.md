@@ -42,7 +42,8 @@ Web servis za pregled i čišćenje prostora na Jellyfin poslužitelju. Nema van
 | `JF_SSH_HOST` | `192.168.1.20` | Računalo na kojem radi Jellyfin (npr. VM s Dockerom), za čišćenje config mape |
 | `JF_SSH_USER` / `JF_SSH_PORT` | `root` / `22` | SSH korisnik i port |
 | `JF_SSH_KEY` | `/var/lib/jellyclean/ssh/id_ed25519` | Privatni ključ (zadano `DATA_DIR/ssh/id_ed25519`) |
-| `JF_SSH_SUDO` | `false` | `true` ako SSH korisnik nije root, nego ima sudo bez lozinke |
+| `JF_SSH_SUDO` | `false` | `true` ako SSH korisnik ima **potpuni** sudo bez lozinke (ne preporučuje se) |
+| `JF_SSH_HELPER` | `/usr/local/sbin/jellyclean-helper` | Ograničeni pomoćni program na Jellyfin računalu, pokreće se sa `sudo -n` (postavlja ga LXC skripta) |
 | `JF_CONFIG_PATH` | `/opt/jellyfin/config` | Jellyfin `/config` mapa na tom računalu |
 | `JF_CACHE_PATH`, `JF_LOG_PATH`, `JF_DATA_PATH`, `JF_METADATA_PATH` | | Ako se razlikuju od zadanih (`config/cache`, `config/log`, `config/data`, `data/metadata`). Kod službenog Docker imagea su cache i data drugdje; LXC skripta to otkriva sama |
 | `JELLYFIN_VERIFY_TLS` | `true` | `false` za samopotpisani certifikat (npr. `.int` domena) |
@@ -91,9 +92,14 @@ Bez Jellyfina skripta predlaže mape prema imenu (`movies`, `filmovi`, `tv`, `se
 - u kontejneru se napravi SSH ključ samo za JellyClean
 - ključ se postavi na Jellyfin računalo: upišeš lozinku jednom (`ssh-copy-id`) ili ga dodaš ručno
 - putanje se otkrivaju same, preko `docker inspect` za kontejner s „jellyfin” u imenu (linuxserver ili službeni image) ili kao standardna paketna instalacija (`/var/lib/jellyfin`)
-- provjeri se pravo pisanja. Ako korisnik nije root, koristi se `sudo -n` kad je dostupan
+- **SSH korisnik ne mora biti root.** Skripta prvo provjeri ima li korisnik već prava na cache, log i metadata mape, što je čest slučaj kod linuxserver imagea s `PUID` jednakim UID-u korisnika. Ako ima, ništa se ne mijenja.
+- Ako nema, a root se dobiva preko `sudo` uz lozinku, skripta lozinku pita **jednom** i ne sprema je. Koristi je za otkrivanje putanja i za postavljanje **ograničenog pomoćnog programa**:
+  - `/usr/local/sbin/jellyclean-helper`, vlasnik root. Zna samo izmjeriti mape te obrisati cache, stare logove i siročad u metadata, i to samo u putanjama upisanima u njega
+  - `/etc/sudoers.d/jellyclean`, provjeren s `visudo`: `<korisnik> ALL=(root) NOPASSWD: /usr/local/sbin/jellyclean-helper`
 
-Na Jellyfin računalu se ništa ne instalira.
+  Tako JellyClean i njegov SSH ključ nemaju potpuni root na tom računalu. Uklanjanje: `sudo rm /usr/local/sbin/jellyclean-helper /etc/sudoers.d/jellyclean`
+
+Kad nema ograničenja ovlasti, na Jellyfin računalu se ništa ne instalira.
 
 Ručno se upisuju samo IP adresa NAS-a, Jellyfin URL i API ključ te, za čišćenje configa, adresa Jellyfin računala. Sve ostalo ima prijedlog.
 
