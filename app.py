@@ -1358,8 +1358,15 @@ def largest_files(min_mb=0, older_days=0, ext=None, q=None, limit=300, root=None
     min_b = float(min_mb) * 1024 ** 2
     cutoff = time.time() - float(older_days) * 86400 if older_days else None
     ql = q.lower() if q else None
-    exts = {e.strip().lower() if e.strip().startswith(".") else "." + e.strip().lower()
-            for e in ext.split(",")} if ext else None
+    exts = None
+    if ext:
+        exts = set()
+        for e in ext.split(","):
+            e = e.strip().lower()
+            if e in ("(bez)", "-"):
+                exts.add("")          # datoteke bez ekstenzije
+            elif e:
+                exts.add(e if e.startswith(".") else "." + e)
     with SCAN.lock:
         def ok(f):
             if f[1] < min_b:
