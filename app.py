@@ -669,7 +669,6 @@ class Jellyfin:
             url += "?" + urllib.parse.urlencode(params)
         data = json.dumps(body).encode() if body is not None else None
         r = urllib.request.Request(url, data=data, method=method)
-        r.add_header("X-Emby-Token", CFG["jf_key"])
         r.add_header("Authorization", f'MediaBrowser Client="JellyClean", Device="JellyClean", '
                                       f'DeviceId="jellyclean", Version="{APP_VERSION}", Token="{CFG["jf_key"]}"')
         r.add_header("Accept", "application/json")

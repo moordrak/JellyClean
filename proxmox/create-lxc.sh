@@ -47,80 +47,92 @@ die() {
 trap 'die "Greška u liniji $LINENO: $BASH_COMMAND"' ERR
 trap 'rm -rf "$TMPD"' EXIT
 
-USE_WT=0
-if [[ "$NONINTERACTIVE" != "1" ]] && command -v whiptail >/dev/null && [[ -t 0 ]]; then USE_WT=1; fi
-WT_H=$(( $(tput lines 2>/dev/null || echo 30) - 4 )); (( WT_H > 30 )) && WT_H=30; (( WT_H < 18 )) && WT_H=18
-WT_W=$(( $(tput cols 2>/dev/null || echo 100) - 6 )); (( WT_W > 110 )) && WT_W=110; (( WT_W < 70 )) && WT_W=70
+# Sva pitanja idu izravno kroz konzolu (bez dijaloških prozora).
+# Kad se skripta pokreće kao  bash -c "$(curl ...)"  stdin je terminal; za svaki slučaj čitamo iz /dev/tty.
+if [[ "$NONINTERACTIVE" != "1" && ! -t 0 && -r /dev/tty ]] && { : < /dev/tty; } 2>/dev/null; then exec 3</dev/tty; else exec 3<&0; fi
+HR="${C_INF}────────────────────────────────────────────────────────────────────${C_0}"
+
+_read() { local __v=$1 s=${2:-}; local x; if [[ -n "$s" ]]; then IFS= read -r -s x <&3 || true; echo; else IFS= read -r x <&3 || true; fi; printf -v "$__v" '%s' "$x"; }
+_q() { printf '\n%b%b%b\n' "$C_B" "$1" "$C_0"; }
 
 # ask VAR "pitanje" "default"
 ask() {
   local __var=$1 q=$2 def=${3:-} ans
   if [[ "$NONINTERACTIVE" == "1" ]]; then printf -v "$__var" '%s' "$def"; return; fi
-  if (( USE_WT )); then
-    ans=$(whiptail --title "$TITLE" --inputbox "$q" 14 "$WT_W" "$def" 3>&1 1>&2 2>&3) || die "Prekinuto."
-  else
-    printf '%b [%s]: ' "$q" "$def"; read -r ans || true; ans=${ans:-$def}
-  fi
+  _q "$q"
+  printf '  > %s' "${def:+[$def] }"; _read ans; ans=${ans:-$def}
   printf -v "$__var" '%s' "$ans"
 }
+# ask_secret VAR "pitanje" ["default"]  - unos se ne prikazuje, razmaci i novi redovi se uklanjaju
 ask_secret() {
   local __var=$1 q=$2 def=${3:-} ans
   if [[ "$NONINTERACTIVE" == "1" ]]; then printf -v "$__var" '%s' "$def"; return; fi
-  if (( USE_WT )); then
-    ans=$(whiptail --title "$TITLE" --passwordbox "$q${def:+\n\n(prazno = generiraj)}" 12 "$WT_W" 3>&1 1>&2 2>&3) || die "Prekinuto."
-  else
-    printf '%b: ' "$q"; read -r -s ans || true; echo
-  fi
+  _q "$q"
+  printf '  > %s' "${def:+(Enter = generiraj) }"; _read ans s
+  ans=$(printf '%s' "$ans" | tr -d '[:space:]')
+  [[ -n "$ans" ]] && printf '  %b✔%b primljeno (%d znakova)\n' "$C_OK" "$C_0" "${#ans}"
   printf -v "$__var" '%s' "${ans:-$def}"
 }
+# yesno "pitanje" default(y|n)
 yesno() {
   local q=$1 def=${2:-y} ans
   if [[ "$NONINTERACTIVE" == "1" ]]; then [[ "$def" == y ]]; return; fi
-  if (( USE_WT )); then
-    if [[ "$def" == y ]]; then whiptail --title "$TITLE" --yes-button "Da" --no-button "Ne" --yesno "$q" "$WT_H" "$WT_W"
-    else whiptail --title "$TITLE" --yes-button "Da" --no-button "Ne" --defaultno --yesno "$q" "$WT_H" "$WT_W"; fi
-    return
-  fi
-  printf '%b [%s]: ' "$q" "$( [[ $def == y ]] && echo D/n || echo d/N )"; read -r ans || true; ans=${ans:-$def}
-  [[ "$ans" =~ ^[yYdD] ]]
+  while :; do
+    _q "$q"
+    printf '  > [%s] ' "$( [[ $def == y ]] && echo D/n || echo d/N )"; _read ans; ans=${ans:-$def}
+    case $ans in [yYdD]*) return 0 ;; [nN]*) return 1 ;; esac
+    echo "  Odgovori s d (da) ili n (ne)."
+  done
 }
-# menu VAR "pitanje" default tag opis ...
+# menu VAR "pitanje" default tag opis tag opis ...   (odabir brojem ili oznakom)
 menu() {
   local __var=$1 q=$2 def=$3; shift 3
-  local ans
+  local a=("$@") i n ans defn=1
   if [[ "$NONINTERACTIVE" == "1" ]]; then printf -v "$__var" '%s' "$def"; return; fi
-  if (( USE_WT )); then
-    local n=$(( $# / 2 )); (( n > WT_H - 10 )) && n=$(( WT_H - 10 ))
-    ans=$(whiptail --title "$TITLE" --default-item "$def" --menu "$q" "$WT_H" "$WT_W" "$n" "$@" 3>&1 1>&2 2>&3) || die "Prekinuto."
-  else
-    printf '%b\n' "$q"; local a=("$@") i
-    for ((i = 0; i < ${#a[@]}; i += 2)); do echo "   ${a[i]}) ${a[i+1]}"; done
-    printf 'Odabir [%s]: ' "$def"; read -r ans || true; ans=${ans:-$def}
-  fi
-  printf -v "$__var" '%s' "$ans"
+  _q "$q"
+  for ((i = 0; i < ${#a[@]}; i += 2)); do
+    n=$(( i / 2 + 1 )); [[ "${a[i]}" == "$def" ]] && defn=$n
+    if [[ -n "${a[i+1]}" ]]; then printf '   %2d) %s\n' "$n" "${a[i+1]}"; else printf '   %2d) %s\n' "$n" "${a[i]}"; fi
+  done
+  while :; do
+    printf '  > [%s] ' "$defn"; _read ans; ans=${ans:-$defn}
+    if [[ "$ans" =~ ^[0-9]+$ ]] && (( ans >= 1 && ans <= ${#a[@]} / 2 )); then printf -v "$__var" '%s' "${a[(ans-1)*2]}"; return; fi
+    for ((i = 0; i < ${#a[@]}; i += 2)); do [[ "${a[i]}" == "$ans" ]] && { printf -v "$__var" '%s' "$ans"; return; }; done
+    echo "  Upiši broj od 1 do $(( ${#a[@]} / 2 ))."
+  done
 }
-# checklist VAR "pitanje" tag opis ON|OFF ...   -> VAR = odabrani tagovi odvojeni razmakom
+# checklist VAR "pitanje" tag opis ON|OFF ...  -> VAR = odabrani tagovi (razmakom)
+# Unos: brojevi odvojeni razmakom ili zarezom, "sve", "nista", Enter = predloženo
 checklist() {
   local __var=$1 q=$2; shift 2
-  local ans a=("$@") i def=""
-  for ((i = 0; i < ${#a[@]}; i += 3)); do [[ ${a[i+2]} == ON ]] && def+="${a[i]} "; done
-  if [[ "$NONINTERACTIVE" == "1" ]]; then printf -v "$__var" '%s' "${def% }"; return; fi
-  if (( USE_WT )); then
-    local n=$(( $# / 3 )); (( n > WT_H - 10 )) && n=$(( WT_H - 10 ))
-    ans=$(whiptail --title "$TITLE" --separate-output --checklist "$q\n\n(razmak = označi/odznači, Enter = potvrdi)" "$WT_H" "$WT_W" "$n" "$@" 3>&1 1>&2 2>&3) || die "Prekinuto."
-    ans=$(echo "$ans" | tr '\n' ' ')
-  else
-    printf '%b\n' "$q"
-    for ((i = 0; i < ${#a[@]}; i += 3)); do echo "   [$([[ ${a[i+2]} == ON ]] && echo x || echo ' ')] ${a[i]}) ${a[i+1]}"; done
-    printf 'Odabrani (razmakom odvojeni) [%s]: ' "${def% }"; read -r ans || true; ans=${ans:-${def% }}
+  local a=("$@") i n ans defn="" out="" t
+  for ((i = 0; i < ${#a[@]}; i += 3)); do [[ ${a[i+2]} == ON ]] && defn+="$(( i / 3 + 1 )) "; done
+  defn=${defn% }
+  if [[ "$NONINTERACTIVE" == "1" ]]; then
+    for t in $defn; do out+="${a[(t-1)*3]} "; done; printf -v "$__var" '%s' "${out% }"; return
   fi
-  local valid="" t j
-  for t in $ans; do
-    for ((j = 0; j < ${#a[@]}; j += 3)); do [[ "$t" == "${a[j]}" ]] && { valid+="$t "; break; }; done
+  _q "$q"
+  for ((i = 0; i < ${#a[@]}; i += 3)); do
+    n=$(( i / 3 + 1 ))
+    printf '   %2d) [%s] %s\n' "$n" "$([[ ${a[i+2]} == ON ]] && echo x || echo ' ')" "${a[i+1]:-${a[i]}}"
   done
-  printf -v "$__var" '%s' "${valid% }"
+  echo "  Upiši brojeve odvojene razmakom (npr. 1 3), 'sve' ili 'nista'. Enter = označeni [x]."
+  while :; do
+    printf '  > [%s] ' "${defn:-nista}"; _read ans; ans=${ans:-${defn:-nista}}
+    ans=${ans//,/ }; out=""
+    case ${ans,,} in sve|all) for ((i = 0; i < ${#a[@]}; i += 3)); do out+="${a[i]} "; done; break ;; nista|ništa|none|0) break ;; esac
+    local bad=0
+    for t in $ans; do
+      if [[ "$t" =~ ^[0-9]+$ ]] && (( t >= 1 && t <= ${#a[@]} / 3 )); then out+="${a[(t-1)*3]} "; else bad=1; fi
+    done
+    (( bad )) && { echo "  Neispravan unos. Upiši brojeve od 1 do $(( ${#a[@]} / 3 ))."; continue; }
+    break
+  done
+  printf -v "$__var" '%s' "${out% }"
 }
-msg() { if (( USE_WT )); then whiptail --title "$TITLE" --msgbox "$1" "$WT_H" "$WT_W"; else echo -e "\n$1\n"; fi; }
+msg() { printf '\n%s\n%b\n%s\n' "$HR" "$1" "$HR"; }
+pause() { [[ "$NONINTERACTIVE" == "1" ]] && return; printf '  Pritisni Enter za nastavak… '; _read _; }
+jf_auth() { printf 'Authorization: MediaBrowser Client="JellyClean", Device="Proxmox", DeviceId="jellyclean-setup", Version="1.0", Token="%s"' "$1"; }
 envq() { local v=${1//\\/\\\\}; v=${v//\"/\\\"}; printf '"%s"' "$v"; }
 slugify() { echo "$1" | iconv -f utf-8 -t ascii//TRANSLIT 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//'; }
 ctx() { pct exec "$CTID" -- bash -c "$1"; }
@@ -267,17 +279,22 @@ mape, a JellyClean prikazuje tko je što pogledao.
 
 API ključ: Jellyfin → Nadzorna ploča → API ključevi → +" y; then
   while :; do
-    ask JF_URL "Jellyfin URL (npr. http://192.168.1.20:8096 ili https://jellyfin.home.int)" "http://"
-    JF_URL=${JF_URL%/}
+    ask JF_URL "Jellyfin URL (npr. http://192.168.1.20:8096 ili https://jellyfin.home.int)" ""
+    JF_URL=$(printf '%s' "$JF_URL" | tr -d '[:space:]'); JF_URL=${JF_URL%/}
+    [[ -n "$JF_URL" && ! "$JF_URL" =~ ^https?:// ]] && JF_URL="http://$JF_URL"
     [[ "$JF_URL" =~ ^https?://[^/]+ ]] && break; msg "URL mora počinjati s http:// ili https://"
   done
   while :; do
     ask_secret JF_KEY "Jellyfin API ključ" ""
     [[ -n "$JF_KEY" ]] || { yesno "Bez ključa nema automatskog otkrivanja. Nastaviti bez Jellyfina?" n && { JF_URL=""; break; }; continue; }
-    code=$(curl -sk -o /dev/null -w '%{http_code}' -m 8 -H "X-Emby-Token: $JF_KEY" "$JF_URL/System/Info" 2>/dev/null || true); code=${code:-000}
+    code=$(curl -sk -o /dev/null -w '%{http_code}' -m 8 -H "$(jf_auth "$JF_KEY")" "$JF_URL/System/Info" 2>/dev/null || true); code=${code:-000}
     case $code in
       200) ok "Jellyfin API ključ radi."; break ;;
-      401|403) msg "Jellyfin odbija ključ (HTTP $code). Upiši ga ponovno." ;;
+      401|403) msg "Jellyfin odbija ključ (HTTP $code).
+
+Provjeri:
+  • je li ključ kopiran cijeli (Nadzorna ploča → API ključevi; ključ ima 32 znaka)
+  • je li URL Jellyfina točan; ako ide preko nginxa, prosljeđuje li nginx header Authorization" ;;
       *) yesno "Jellyfin na $JF_URL nije dostupan s Proxmox hosta (HTTP $code).\n\nMožda je dostupan iz kontejnera. Nastaviti s ovim podacima?" y && break ;;
     esac
   done
@@ -434,7 +451,8 @@ def out(*a):
 
 def jf(path, params=None):
     u = url + path + ("?" + urllib.parse.urlencode(params) if params else "")
-    r = urllib.request.Request(u, headers={"X-Emby-Token": key, "Accept": "application/json"})
+    auth = f'MediaBrowser Client="JellyClean", Device="Proxmox", DeviceId="jellyclean-setup", Version="1.0", Token="{key}"'
+    r = urllib.request.Request(u, headers={"Authorization": auth, "Accept": "application/json"})
     ctx = None if verify else ssl._create_unverified_context()
     with urllib.request.urlopen(r, timeout=60, context=ctx) as resp:
         return json.loads(resp.read() or b"null")
@@ -724,8 +742,8 @@ $PUBKEY
 Npr. na Jellyfin računalu:
   echo '$PUBKEY' >> ~/.ssh/authorized_keys
 
-Pritisni OK kad je dodano."
-        echo "$PUBKEY" ;;
+Kad je dodano, nastavi."
+        pause ;;
       *) SSH_ON=0 ;;
     esac
     if (( SSH_ON )); then
