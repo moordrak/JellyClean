@@ -47,36 +47,99 @@ die() {
 trap 'die "Greška u liniji $LINENO: $BASH_COMMAND"' ERR
 trap 'rm -rf "$TMPD"' EXIT
 
-# Sva pitanja idu izravno kroz konzolu (bez dijaloških prozora).
-# Kad se skripta pokreće kao  bash -c "$(curl ...)"  stdin je terminal; za svaki slučaj čitamo iz /dev/tty.
+# ---- Korisničko sučelje ----------------------------------------------------
+# Zadano: whiptail dijaloški prozori (kao Proxmox helper skripte).
+# Obična konzola: NO_WHIPTAIL=1 bash create-lxc.sh  (ili kad whiptail nije dostupan).
+# Kad se skripta pokreće kao  curl … | bash  stdin nije terminal, pa unos čitamo iz /dev/tty.
 if [[ "$NONINTERACTIVE" != "1" && ! -t 0 && -r /dev/tty ]] && { : < /dev/tty; } 2>/dev/null; then exec 3</dev/tty; else exec 3<&0; fi
+UI=console
+if [[ "$NONINTERACTIVE" != "1" && "${NO_WHIPTAIL:-0}" != "1" ]] && command -v whiptail >/dev/null && [[ -t 3 && -t 2 ]]; then UI=wt; fi
 HR="${C_INF}────────────────────────────────────────────────────────────────────${C_0}"
+STEP_TXT=""; STEP_N=7
 
+banner() {
+  local P=$'\e[38;5;141m' Cc=$'\e[38;5;45m' M=$'\e[38;5;245m' Z=$'\e[0m'
+  [[ -t 1 ]] || { P=""; Cc=""; M=""; Z=""; }
+  printf '\n%s    ╦┌─┐┬  ┬ ┬ ┬%s╔═╗┬  ┌─┐┌─┐┌┐┌%s\n' "$P" "$Cc" "$Z"
+  printf '%s    ║├┤ │  │ └┬┘%s║  │  ├┤ ├─┤│││%s\n' "$P" "$Cc" "$Z"
+  printf '%s   ╚╝└─┘┴─┘┴─┘┴ %s╚═╝┴─┘└─┘┴ ┴┘└┘%s\n' "$P" "$Cc" "$Z"
+  printf '%s   pregled i čišćenje Jellyfin prostora · instalacija u Proxmox LXC%s\n' "$M" "$Z"
+  [[ -n "$STEP_TXT" ]] && printf '\n   %s%s%s\n' "$C_B" "$STEP_TXT" "$C_0"
+  echo
+}
+# step BROJ "naziv"  - oznaka koraka (u whiptailu na vrhu ekrana, u konzoli kao naslov)
+step() {
+  STEP_TXT="Korak $1/$STEP_N · $2"
+  if [[ "$UI" == console && "$NONINTERACTIVE" != 1 ]]; then
+    local i bar=""; for ((i = 1; i <= STEP_N; i++)); do (( i <= $1 )) && bar+="━━━━" || bar+="┄┄┄┄"; done
+    printf '\n%s %s%s%s\n' "$HR" "$C_B" "$STEP_TXT" "$C_0"; printf '   %s%s%s\n' "$C_INF" "$bar" "$C_0"
+  fi
+}
+
+# ---------------------------------------------------------------- konzola ---
 _read() { local __v=$1 s=${2:-}; local x; if [[ -n "$s" ]]; then IFS= read -r -s x <&3 || true; echo; else IFS= read -r x <&3 || true; fi; printf -v "$__v" '%s' "$x"; }
 _q() { printf '\n%b%b%b\n' "$C_B" "$1" "$C_0"; }
 
+# --------------------------------------------------------------- whiptail ---
+# dims "tekst" dodatni_redovi  -> postavlja WH, WW, WSCROLL
+dims() {
+  local t lines cols nl wid
+  t=$(printf '%b' "$1")
+  lines=$(tput lines 2>/dev/null || echo 24); cols=$(tput cols 2>/dev/null || echo 80)
+  nl=$(printf '%s\n' "$t" | wc -l); wid=$(printf '%s\n' "$t" | wc -L)
+  WW=$(( wid + 8 )); (( WW < 64 )) && WW=64; (( WW > cols - 4 )) && WW=$(( cols - 4 ))
+  WH=$(( nl + ${2:-7} )); WSCROLL=()
+  if (( WH > lines - 3 )); then WH=$(( lines - 3 )); WSCROLL=(--scrolltext); fi
+}
+wt() { whiptail --backtitle "JellyClean · instalacija u Proxmox LXC${STEP_TXT:+    ·    $STEP_TXT}" --title " JellyClean " "$@" 5>&1 1>&2 2>&5 <&3; }
+wcancel() {
+  if whiptail --backtitle "JellyClean" --title " Prekid " --yes-button "Prekini" --no-button "Nastavi" --defaultno \
+       --yesno "Prekinuti instalaciju?$( (( CT_CREATED )) && printf '\n\nKontejner %s je već kreiran.' "$CTID")" 10 60 <&3; then
+    die "Prekinuto."
+  fi
+}
+
+# ------------------------------------------------------- zajednički upiti ---
 # ask VAR "pitanje" "default"
 ask() {
   local __var=$1 q=$2 def=${3:-} ans
   if [[ "$NONINTERACTIVE" == "1" ]]; then printf -v "$__var" '%s' "$def"; return; fi
-  _q "$q"
-  printf '  > %s' "${def:+[$def] }"; _read ans; ans=${ans:-$def}
+  if [[ "$UI" == wt ]]; then
+    dims "$q" 9
+    while ! ans=$(wt --ok-button "Dalje" --cancel-button "Odustani" --inputbox "$q" "$WH" "$WW" "$def"); do wcancel; done
+  else
+    _q "$q"; printf '  > %s' "${def:+[$def] }"; _read ans; ans=${ans:-$def}
+  fi
   printf -v "$__var" '%s' "$ans"
 }
-# ask_secret VAR "pitanje" ["default"]  - unos se ne prikazuje, razmaci i novi redovi se uklanjaju
+# ask_secret VAR "pitanje" ["default"] - unos se ne prikazuje; razmaci i novi redovi se uklanjaju
 ask_secret() {
   local __var=$1 q=$2 def=${3:-} ans
   if [[ "$NONINTERACTIVE" == "1" ]]; then printf -v "$__var" '%s' "$def"; return; fi
-  _q "$q"
-  printf '  > %s' "${def:+(Enter = generiraj) }"; _read ans s
+  if [[ "$UI" == wt ]]; then
+    local qq="$q${def:+\n\n(prazno = generiraj)}"
+    dims "$qq" 9
+    while ! ans=$(wt --ok-button "Dalje" --cancel-button "Odustani" --passwordbox "$qq" "$WH" "$WW"); do wcancel; done
+  else
+    _q "$q"; printf '  > %s' "${def:+(Enter = generiraj) }"; _read ans s
+  fi
   ans=$(printf '%s' "$ans" | tr -d '[:space:]')
-  [[ -n "$ans" ]] && printf '  %b✔%b primljeno (%d znakova)\n' "$C_OK" "$C_0" "${#ans}"
+  [[ -n "$ans" && "$UI" == console ]] && printf '  %b✔%b primljeno (%d znakova)\n' "$C_OK" "$C_0" "${#ans}"
   printf -v "$__var" '%s' "${ans:-$def}"
 }
 # yesno "pitanje" default(y|n)
 yesno() {
-  local q=$1 def=${2:-y} ans
+  local q=$1 def=${2:-y} ans rc
   if [[ "$NONINTERACTIVE" == "1" ]]; then [[ "$def" == y ]]; return; fi
+  if [[ "$UI" == wt ]]; then
+    dims "$q" 7
+    while :; do
+      rc=0
+      if [[ "$def" == y ]]; then wt --yes-button "Da" --no-button "Ne" "${WSCROLL[@]}" --yesno "$q" "$WH" "$WW" || rc=$?
+      else wt --yes-button "Da" --no-button "Ne" --defaultno "${WSCROLL[@]}" --yesno "$q" "$WH" "$WW" || rc=$?; fi
+      case $rc in 0) return 0 ;; 1) return 1 ;; *) wcancel ;; esac
+    done
+  fi
   while :; do
     _q "$q"
     printf '  > [%s] ' "$( [[ $def == y ]] && echo D/n || echo d/N )"; _read ans; ans=${ans:-$def}
@@ -84,11 +147,18 @@ yesno() {
     echo "  Odgovori s d (da) ili n (ne)."
   done
 }
-# menu VAR "pitanje" default tag opis tag opis ...   (odabir brojem ili oznakom)
+# menu VAR "pitanje" default tag opis tag opis ...
 menu() {
   local __var=$1 q=$2 def=$3; shift 3
   local a=("$@") i n ans defn=1
   if [[ "$NONINTERACTIVE" == "1" ]]; then printf -v "$__var" '%s' "$def"; return; fi
+  if [[ "$UI" == wt ]]; then
+    local items=() cnt=$(( ${#a[@]} / 2 )) lh
+    for ((i = 0; i < ${#a[@]}; i += 2)); do items+=("${a[i]}" "${a[i+1]:- }"); done
+    dims "$q" $(( cnt + 9 )); lh=$(( WH - $(printf '%b\n' "$q" | wc -l) - 8 )); (( lh < 3 )) && lh=3; (( lh > cnt )) && lh=$cnt
+    while ! ans=$(wt --ok-button "Odaberi" --cancel-button "Odustani" --default-item "$def" --menu "$q" "$WH" "$WW" "$lh" "${items[@]}"); do wcancel; done
+    printf -v "$__var" '%s' "$ans"; return
+  fi
   _q "$q"
   for ((i = 0; i < ${#a[@]}; i += 2)); do
     n=$(( i / 2 + 1 )); [[ "${a[i]}" == "$def" ]] && defn=$n
@@ -102,7 +172,6 @@ menu() {
   done
 }
 # checklist VAR "pitanje" tag opis ON|OFF ...  -> VAR = odabrani tagovi (razmakom)
-# Unos: brojevi odvojeni razmakom ili zarezom, "sve", "nista", Enter = predloženo
 checklist() {
   local __var=$1 q=$2; shift 2
   local a=("$@") i n ans defn="" out="" t
@@ -110,6 +179,14 @@ checklist() {
   defn=${defn% }
   if [[ "$NONINTERACTIVE" == "1" ]]; then
     for t in $defn; do out+="${a[(t-1)*3]} "; done; printf -v "$__var" '%s' "${out% }"; return
+  fi
+  if [[ "$UI" == wt ]]; then
+    local items=() cnt=$(( ${#a[@]} / 3 )) lh qq="$q\n\n(razmak = označi/odznači, Enter = potvrdi)"
+    for ((i = 0; i < ${#a[@]}; i += 3)); do items+=("${a[i]}" "${a[i+1]:- }" "${a[i+2]}"); done
+    dims "$qq" $(( cnt + 9 )); lh=$(( WH - $(printf '%b\n' "$qq" | wc -l) - 8 )); (( lh < 3 )) && lh=3; (( lh > cnt )) && lh=$cnt
+    while ! ans=$(wt --ok-button "Potvrdi" --cancel-button "Odustani" --separate-output --checklist "$qq" "$WH" "$WW" "$lh" "${items[@]}"); do wcancel; done
+    out=""; while IFS= read -r t; do [[ -n "$t" ]] && out+="$t "; done <<< "$ans"
+    printf -v "$__var" '%s' "${out% }"; return
   fi
   _q "$q"
   for ((i = 0; i < ${#a[@]}; i += 3)); do
@@ -130,8 +207,12 @@ checklist() {
   done
   printf -v "$__var" '%s' "${out% }"
 }
-msg() { printf '\n%s\n%b\n%s\n' "$HR" "$1" "$HR"; }
-pause() { [[ "$NONINTERACTIVE" == "1" ]] && return; printf '  Pritisni Enter za nastavak… '; _read _; }
+msg() {
+  if [[ "$NONINTERACTIVE" == "1" ]]; then printf '\n%b\n' "$1"; return; fi
+  if [[ "$UI" == wt ]]; then dims "$1" 7; wt --ok-button "Dalje" "${WSCROLL[@]}" --msgbox "$1" "$WH" "$WW" || true; return; fi
+  printf '\n%s\n%b\n%s\n' "$HR" "$1" "$HR"
+}
+pause() { [[ "$NONINTERACTIVE" == "1" || "$UI" == wt ]] && return; printf '  Pritisni Enter za nastavak… '; _read _; }
 jf_auth() { printf 'Authorization: MediaBrowser Client="JellyClean", Device="Proxmox", DeviceId="jellyclean-setup", Version="1.0", Token="%s"' "$1"; }
 envq() { local v=${1//\\/\\\\}; v=${v//\"/\\\"}; printf '"%s"' "$v"; }
 slugify() { echo "$1" | iconv -f utf-8 -t ascii//TRANSLIT 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//'; }
@@ -141,7 +222,10 @@ ctx() { pct exec "$CTID" -- bash -c "$1"; }
 [[ $EUID -eq 0 ]] || die "Pokreni kao root na Proxmox hostu."
 command -v pct >/dev/null && command -v pveam >/dev/null || die "Ovo nije Proxmox VE host (nema pct/pveam)."
 
-msg "JellyClean - instalacija u novi LXC kontejner
+[[ "$NONINTERACTIVE" != 1 ]] && { clear 2>/dev/null || true; }
+banner
+[[ "$UI" == wt ]] && sleep 1
+msg "Dobro došao u instalaciju JellyCleana!
 
 Skripta će AUTOMATSKI:
  1. predložiti postavke kontejnera (možeš ih prihvatiti ili promijeniti)
@@ -158,6 +242,7 @@ Prije svakog koraka koji nešto mijenja vidjet ćeš prijedlog s
 pojašnjenjem i tražit će se tvoje odobrenje."
 
 # ===================================================== 1. KONTEJNER ======
+step 1 "Kontejner"
 NEXTID=$(pvesh get /cluster/nextid 2>/dev/null || echo 120)
 
 mapfile -t TSTORES < <(pvesm status -content vztmpl 2>/dev/null | awk 'NR>1 && $3=="active"{print $1}')
@@ -217,6 +302,7 @@ if [[ "$NETMODE" == static ]]; then NET0="name=eth0,bridge=$BRIDGE,ip=$IPCIDR,gw
 [[ -n "$VLAN" ]] && NET0+=",tag=$VLAN"
 
 # ===================================================== 2. NAS / NFS ======
+step 2 "NFS shareovi na NAS-u"
 NAS=""
 while [[ -z "$NAS" ]]; do ask NAS "IP adresa ili ime NAS-a (NFS server)" ""; done
 
@@ -271,6 +357,7 @@ for e in "${SEL_EXPORTS[@]}"; do
 done
 
 # =================================================== 3. JELLYFIN API =====
+step 3 "Jellyfin API"
 JF_URL=""; JF_KEY=""; JF_USERS=""; JF_TLS=true
 if yesno "Povezati s Jellyfinom?
 
@@ -307,6 +394,7 @@ Provjeri:
 fi
 
 # ============================================ 3b. JELLYFIN CONFIG (SSH) ===
+step 4 "Jellyfin config (SSH)"
 SSH_ON=0; SSH_HOST=""; SSH_USER=root; SSH_PORT=22
 if yesno "Čišćenje Jellyfin config mape (cache, slike, logovi, siročad u metadata)?
 
@@ -329,6 +417,7 @@ Ako Jellyfinu pristupaš preko nginxa, ovdje upiši adresu VM-a, ne nginxa." "$d
 fi
 
 # ===================================================== 4. PONAŠANJE ======
+step 5 "Postavke servisa"
 ALLOW_DELETE=true; TRASH=true; TRASH_DAYS=7; SCAN_H=6; PORT=8095; AUTH_USER=admin
 AUTH_PASS=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16 || true)
 if ! yesno "Prijedlog ponašanja servisa:
@@ -378,6 +467,8 @@ Nakon kreiranja slijedi automatsko otkrivanje mapa, a prijedlog
 yesno "$summary\n\nKreirati kontejner?" y || die "Prekinuto - ništa nije kreirano."
 
 # ======================================================= KREIRANJE =======
+step 6 "Kreiranje i otkrivanje"
+[[ "$UI" == wt ]] && { clear; banner; }
 info "Tražim predložak $OS_CHOICE…"
 pveam update >/dev/null 2>&1 || warn "pveam update nije uspio, koristim lokalni popis."
 case $OS_CHOICE in
@@ -711,6 +802,7 @@ if (( ${#WFAIL[@]} )); then
 fi
 
 # ========================================================= INSTALACIJA ===
+step 7 "Instalacija"
 info "Instaliram JellyClean u $APP_DIR…"
 case $SRC in
   local)
@@ -1066,6 +1158,17 @@ pct set "$CTID" --description "JellyClean - pregled i čišćenje Jellyfin prost
 http://${CT_IP:-<ip>}:$PORT
 NAS: $NAS" >/dev/null 2>&1 || true
 
+if [[ "$UI" == wt ]]; then
+  msg "$( (( HEALTH )) && echo "✔ JellyClean radi!" || echo "! Servis se nije javio - provjeri: pct exec $CTID -- journalctl -u jellyclean -n 50")
+
+Sučelje:   http://${CT_IP:-<ip>}:$PORT
+Prijava:   ${AUTH_USER:-(bez lozinke)}${AUTH_USER:+ / $AUTH_PASS}
+Mape:      $media_env
+Config:    $([[ -n "$JFC_CONFIG" ]] && echo "$SSH_USER@$SSH_HOST:$JFC_CONFIG" || echo "(nije podešeno)")
+
+Isti sažetak ostaje ispisan u konzoli nakon zatvaranja prozora."
+  clear; STEP_TXT="Gotovo"; banner
+fi
 echo
 if (( HEALTH )); then ok "${C_B}JellyClean radi!${C_0}"; else warn "Servis se nije javio – pct exec $CTID -- journalctl -u jellyclean -n 50"; fi
 cat <<EOF

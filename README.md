@@ -72,6 +72,9 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/moordrak/JellyClean/main
 git clone https://github.com/moordrak/JellyClean.git && bash JellyClean/proxmox/create-lxc.sh
 ```
 
+Instalacija radi u **whiptail dijaloškim prozorima**, kao Proxmox helper skripte. Na vrhu ekrana stoji *Korak x/7*, a na početku ASCII logo. Dulji poslovi (kreiranje kontejnera, paketi, otkrivanje) ispisuju napredak u konzoli. *Odustani* uvijek pita prekidaš li instalaciju ili nastavljaš.
+Bez prozora, sve u konzoli: `NO_WHIPTAIL=1 bash create-lxc.sh`.
+
 Skripta kreira **privileged** LXC i NFS shareove s NAS-a montira **unutar kontejnera** (`/etc/fstab` u kontejneru). Na Proxmox host se ne dodaje ništa.
 
 Većinu postavki otkriva sama, a prije svake promjene pojasni prijedlog i traži odobrenje:
