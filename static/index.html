@@ -118,6 +118,19 @@ dialog.wide{max-width:1150px}
 .dtable .dt-size{width:92px}
 @media (max-width:640px){.dtable .dt-bar{display:none}}
 .card{min-width:0}
+
+/* ---- jedinstveni okvir kartica: 70% proziran, vidi se dinamična pozadina ---- */
+.tab.active{background:rgba(14,17,24,.30);border:1px solid rgba(255,255,255,.07);border-radius:16px;padding:22px 24px 26px;
+  -webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);box-shadow:0 10px 40px rgba(0,0,0,.25)}
+.tab-head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin:-4px 0 18px;padding-bottom:14px;border-bottom:1px solid rgba(255,255,255,.07)}
+.tab-head h2{margin:0;font-size:19px;font-weight:650;letter-spacing:.2px}
+.tab-head p{margin:0;color:var(--muted);font-size:13px}
+.tab .section:first-of-type{margin-top:0}
+.section h2{font-size:13px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted);font-weight:600;margin:0 0 10px}
+.note{background:rgba(27,34,48,.75)}.note.warn{background:rgba(42,35,18,.8)}
+.toolbar input,.toolbar select{background:rgba(30,34,43,.85)}
+.sel-bar{background:rgba(23,26,33,.92);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
+@media (max-width:700px){main{padding:10px}.tab.active{padding:14px 12px 18px;border-radius:12px}}
 </style>
 </head>
 <body>
@@ -141,6 +154,7 @@ dialog.wide{max-width:1150px}
 
 <!-- PREGLED -->
 <section class="tab active" id="tab-overview">
+  <div class="tab-head"><h2>Pregled</h2><p>Zauzeće diskova i medijskih mapa, brzi uvid u ono što se može očistiti</p></div>
   <div id="ov-notes"></div>
   <div class="section" style="margin-top:0"><h2>Brzi uvid</h2><div class="grid" id="ov-quick"></div></div>
   <div class="section"><h2>Diskovi</h2><div class="grid" id="ov-disks"></div></div>
@@ -154,6 +168,7 @@ dialog.wide{max-width:1150px}
 
 <!-- PREGLEDNIK -->
 <section class="tab" id="tab-browse">
+  <div class="tab-head"><h2>Preglednik</h2><p>Mape i datoteke sortirane po veličini, od najveće</p></div>
   <div class="toolbar"><select id="br-root"></select></div>
   <div class="crumbs" id="br-crumbs"></div>
   <div class="card" style="padding:0">
@@ -163,6 +178,7 @@ dialog.wide{max-width:1150px}
 
 <!-- DATOTEKE -->
 <section class="tab" id="tab-files">
+  <div class="tab-head"><h2>Najveće datoteke</h2><p>Filtriraj po veličini, starosti, ekstenziji ili putanji</p></div>
   <div class="toolbar">
     <label>Min. MB <input type="number" id="f-min" value="1000"></label>
     <label>Starije od (dana) <input type="number" id="f-old" value="0"></label>
@@ -179,6 +195,7 @@ dialog.wide{max-width:1150px}
 
 <!-- JELLYFIN -->
 <section class="tab" id="tab-jellyfin">
+  <div class="tab-head"><h2>Jellyfin</h2><p>Tko je što pogledao, čišćenje odgledanog i datoteke koje Jellyfin ne poznaje</p></div>
   <div id="jf-notes"></div>
   <div class="toolbar">
     <select id="jf-kind"><option value="movies">Filmovi</option><option value="series">Serije</option><option value="orphans">Na disku, a nije u Jellyfinu</option><option value="tasks">Jellyfin održavanje</option></select>
@@ -201,6 +218,7 @@ dialog.wide{max-width:1150px}
 
 <!-- SMEĆE -->
 <section class="tab" id="tab-junk">
+  <div class="tab-head"><h2>Smeće i duplikati</h2><p>Automatski pronađeno smeće, duplikati i prazne mape</p></div>
   <div class="note">Automatski prepoznato: sample videi, nedovršena preuzimanja (.part, .!qB), .exe/.url smeće iz releasea, rar arhive, prazne datoteke i mape te više verzija istog filma/epizode u istoj mapi. Pregledaj prije brisanja.</div>
   <div class="section" style="margin-top:0"><h2>Smeće <span class="sub" id="j-sum"></span></h2>
     <div class="card" style="padding:0"><table id="j-table"><thead><tr><th style="width:28px"><input type="checkbox" id="j-all"></th><th>Putanja</th><th>Razlog</th><th class="num">Veličina</th></tr></thead><tbody></tbody></table></div></div>
@@ -213,6 +231,7 @@ dialog.wide{max-width:1150px}
 
 <!-- JELLYFIN CONFIG -->
 <section class="tab" id="tab-jfconfig">
+  <div class="tab-head"><h2>Jellyfin config</h2><p>Cache, logovi i metadata na računalu na kojem radi Jellyfin</p></div>
   <div id="jc-notes"></div>
   <div class="toolbar"><span class="sub" id="jc-head"></span><div class="spacer"></div>
     <button class="btn" id="jc-tasks">Jellyfin zadaci održavanja</button>
@@ -232,6 +251,7 @@ dialog.wide{max-width:1150px}
 
 <!-- KANTA -->
 <section class="tab" id="tab-trash">
+  <div class="tab-head"><h2>Kanta</h2><p>Obrisane stavke - vraćanje ili trajno brisanje</p></div>
   <div class="note warn" id="t-note"></div>
   <div class="toolbar"><button class="btn danger" id="t-empty-all">Isprazni cijelu kantu</button><span class="sub" id="t-sum"></span></div>
   <div id="t-list"></div>
