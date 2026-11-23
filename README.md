@@ -110,8 +110,16 @@ Upravljanje kontejnerom:
 ```bash
 pct exec <ID> -- nano /etc/jellyclean.env      # konfiguracija, pa: systemctl restart jellyclean
 pct exec <ID> -- journalctl -u jellyclean -f   # logovi
-pct exec <ID> -- jellyclean-update             # nadogradnja (privatni repo: GH_TOKEN=xxx jellyclean-update)
+pct exec <ID> -- /usr/local/bin/jellyclean-update   # nadogradnja (privatni repo: dodaj env GH_TOKEN=xxx ispred)
 ```
+
+### Nadogradnja postojećeg kontejnera (s Proxmox hosta)
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/moordrak/JellyClean/main/proxmox/update-lxc.sh)"
+```
+
+Skripta sama pronađe JellyClean kontejnere (po tagu ili hostnameu) ili ih prima kao argumente (`update-lxc.sh 105`). U svaki postavi ili osvježi `/usr/local/bin/jellyclean-update` i pokrene ga. Nadogradnja radi i za instalaciju iz gita (`git pull`) i bez gita (preuzme se najnoviji release). Za privatni repozitorij: `GH_TOKEN=xxx bash update-lxc.sh`.
 
 ### Postojeći LXC
 

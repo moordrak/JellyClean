@@ -725,6 +725,52 @@ case $SRC in
 esac
 pct exec "$CTID" -- test -f "$APP_DIR/app.py" || die "Instalacija koda nije uspjela."
 ok "Kod instaliran."
+cat > "$TMPD/upd" <<'UPDEOF'
+#!/usr/bin/env bash
+# JellyClean - nadogradnja na najnoviju verziju (pokreni unutar kontejnera kao root)
+#   jellyclean-update               javni repozitorij
+#   GH_TOKEN=xxx jellyclean-update  privatni repozitorij
+# Radi i za instalaciju iz gita (git pull) i bez gita (preuzima najnoviji release).
+set -euo pipefail
+APP=/opt/jellyclean
+REPO=moordrak/JellyClean
+ver() { grep -oP '^APP_VERSION = "\K[^"]+' "$APP/app.py" 2>/dev/null || echo "?"; }
+[ -f "$APP/app.py" ] || { echo "Nema $APP/app.py - JellyClean nije instaliran u ovom kontejneru."; exit 1; }
+OLD=$(ver)
+AUTH=()
+[ -n "${GH_TOKEN:-}" ] && AUTH=(-H "Authorization: Bearer $GH_TOKEN")
+
+if [ -d "$APP/.git" ]; then
+  echo "➜ git pull…"
+  cd "$APP"
+  if [ -n "${GH_TOKEN:-}" ]; then
+    url=$(git remote get-url origin)
+    git pull -q --ff-only "${url/https:\/\//https://x-access-token:$GH_TOKEN@}" HEAD
+  else
+    git pull -q --ff-only
+  fi
+else
+  echo "➜ preuzimam najnoviji release s GitHuba…"
+  TAG=$(curl -fsSL "${AUTH[@]}" "https://api.github.com/repos/$REPO/releases/latest" \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])') \
+    || { echo "Ne mogu dohvatiti najnoviji release (privatni repozitorij? pokreni s GH_TOKEN=...)"; exit 1; }
+  TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+  curl -fsSL "${AUTH[@]}" -o "$TMP/src.tgz" "https://api.github.com/repos/$REPO/tarball/$TAG"
+  tar -xzf "$TMP/src.tgz" -C "$TMP"
+  SRC=$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -1)
+  [ -f "$SRC/app.py" ] || { echo "Preuzeta arhiva ne sadrži app.py"; exit 1; }
+  cp -a "$SRC"/. "$APP"/
+fi
+chown -R root:root "$APP"
+systemctl restart jellyclean
+sleep 2
+if systemctl is-active -q jellyclean; then
+  echo "✔ JellyClean nadograđen: $OLD → $(ver)"
+else
+  echo "✘ Servis se nije pokrenuo - journalctl -u jellyclean -n 50"; exit 1
+fi
+UPDEOF
+pct push "$CTID" "$TMPD/upd" /usr/local/bin/jellyclean-update --perms 755
 
 # ================================================ JELLYFIN CONFIG (SSH) ===
 JF_SSH_SUDO=false; JF_SSH_HELPER=""; JFC_CONFIG=""; JFC_CACHE=""; JFC_LOG=""; JFC_DATA=""; JFC_META=""
@@ -1006,22 +1052,6 @@ WantedBy=multi-user.target
 EOF
 pct push "$CTID" "$TMPD/svc" /etc/systemd/system/jellyclean.service
 
-cat > "$TMPD/upd" <<EOF
-#!/usr/bin/env bash
-# Nadogradnja JellyCleana (privatni repo: GH_TOKEN=xxx jellyclean-update)
-set -e
-cd $APP_DIR
-[ -d .git ] || { echo "Instalirano iz lokalnih datoteka - nadogradi ponovnim kopiranjem."; exit 1; }
-if [ -n "\${GH_TOKEN:-}" ]; then
-  url=\$(git remote get-url origin)
-  git pull -q "\${url/https:\/\//https://x-access-token:\$GH_TOKEN@}" HEAD
-else
-  git pull -q --ff-only
-fi
-systemctl restart jellyclean
-echo "JellyClean nadograđen: \$(git log -1 --format='%h %s')"
-EOF
-pct push "$CTID" "$TMPD/upd" /usr/local/bin/jellyclean-update --perms 755
 
 ctx "mkdir -p /var/lib/jellyclean && chown -R $RUN_UID:$RUN_GID /var/lib/jellyclean && chown -R root:root $APP_DIR && systemctl daemon-reload && systemctl enable -q --now jellyclean"
 
@@ -1050,7 +1080,7 @@ cat <<EOF
   Konfiguracija:  pct exec $CTID -- nano /etc/jellyclean.env   (pa: systemctl restart jellyclean)
   NFS mountovi:   pct exec $CTID -- cat /etc/fstab
   Logovi:         pct exec $CTID -- journalctl -u jellyclean -f
-  Nadogradnja:    pct exec $CTID -- jellyclean-update
+  Nadogradnja:    pct exec $CTID -- /usr/local/bin/jellyclean-update
 
 EOF
 [[ -n "$AUTH_USER" ]] && warn "Zapiši lozinku (nalazi se i u /etc/jellyclean.env u kontejneru)."
