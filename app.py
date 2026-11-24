@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -1367,17 +1367,35 @@ def _nfc(s):
     return unicodedata.normalize("NFC", s)
 
 
+class PathCheckCancelled(Exception):
+    pass
+
+
 class PathCheck:
     def __init__(self):
         self.lock = threading.Lock()
         self.result = None
         self.running = False
         self.error = None
+        self.cancelled = False
+        self.cancel_ev = threading.Event()
+        self.progress = {"phase": "", "done": 0, "total": 0}
         self.items = {}      # id -> zapis (za akcije)
+
+    def cancel(self):
+        if self.running:
+            self.cancel_ev.set()
+            self.progress["phase"] = "Prekidam…"
+        return {"cancelling": self.running}
+
+    def _check_cancel(self):
+        if self.cancel_ev.is_set():
+            raise PathCheckCancelled()
 
     def _fetch(self):
         items, start = [], 0
         while True:
+            self._check_cancel()
             res = JF.req("GET", "/Items", {
                 "Recursive": "true", "IncludeItemTypes": "Movie,Episode,Series",
                 "Fields": "Path,MediaSources", "EnableImages": "false", "EnableUserData": "false",
@@ -1385,6 +1403,8 @@ class PathCheck:
             batch = res.get("Items", [])
             items.extend(batch)
             start += len(batch)
+            self.progress.update(phase="Dohvaćam stavke iz Jellyfina", done=start,
+                                 total=res.get("TotalRecordCount", 0))
             if not batch or start >= res.get("TotalRecordCount", 0):
                 break
         return items
@@ -1397,13 +1417,20 @@ class PathCheck:
                 return
             self.running = True
             self.error = None
+            self.cancelled = False
+            self.cancel_ev.clear()
+            self.progress = {"phase": "Pokrećem…", "done": 0, "total": 0}
         try:
             self._run()
+        except PathCheckCancelled:
+            self.cancelled = True
+            log("Provjera putanja: prekinuto")
         except Exception as e:
             self.error = str(e)
             log("Provjera putanja:", e)
         finally:
             self.running = False
+            self.progress["phase"] = ""
 
     def _run(self):
         t0 = time.time()
@@ -1441,8 +1468,14 @@ class PathCheck:
 
         out, counts = [], {"ok": 0, "moved": 0, "missing": 0, "virtual": 0, "virtual_found": 0, "outside": 0}
         recs = {}
+        todo = sum(1 for it in raw if it.get("Type") in ("Movie", "Episode"))
+        self.progress.update(phase="Uspoređujem s diskom", done=0, total=todo)
         for it in raw:
             t = it.get("Type")
+            if t in ("Movie", "Episode"):
+                self.progress["done"] += 1
+                if self.progress["done"] % 100 == 0:
+                    self._check_cancel()
             if t not in ("Movie", "Episode"):
                 continue
             iid = it["Id"].replace("-", "").lower()
@@ -1495,7 +1528,9 @@ class PathCheck:
                 if sdir and sn is not None and en is not None:
                     pre = sdir.rstrip("/") + "/"
                     hits = []
-                    for path, _ in files:
+                    for n_f, (path, _) in enumerate(files):
+                        if n_f % 20000 == 0:
+                            self._check_cancel()
                         if path.startswith(pre):
                             m = EPISODE_RE.search(os.path.basename(path))
                             if m and int(m.group(1)) == sn and int(m.group(2)) == en:
@@ -1883,6 +1918,7 @@ class Handler(BaseHTTPRequestHandler):
                                         "jellyfin": JF.enabled()})
             if u.path == "/api/paths":
                 return self._send(200, {"enabled": JF.enabled(), "running": PC.running, "error": PC.error,
+                                        "cancelled": PC.cancelled, "progress": PC.progress,
                                         "result": PC.result, "allow_delete": CFG["allow_delete"],
                                         "ssh": JFC.enabled()})
             if u.path == "/api/jellyfin/tasks":
@@ -1939,6 +1975,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(409, {"error": "Skeniranje diska je u tijeku - pričekaj da završi"})
                 threading.Thread(target=PC.run, daemon=True).start()
                 return self._send(200, {"started": True})
+            if u.path == "/api/paths/cancel":
+                return self._send(200, PC.cancel())
             if u.path == "/api/paths/notify":
                 return self._send(200, PC.notify(body.get("ids") or []))
             if u.path == "/api/paths/dbfix":

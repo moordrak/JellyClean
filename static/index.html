@@ -229,6 +229,7 @@ header{gap:12px}
   <div id="pc-notes"></div>
   <div class="toolbar">
     <button class="btn primary" id="pc-run">Pokreni provjeru</button>
+    <button class="btn danger" id="pc-cancel" style="display:none">Prekini</button>
     <select id="pc-filter">
       <option value="all">Svi problemi</option>
       <option value="moved">Pronađeno drugdje</option>
@@ -798,18 +799,26 @@ refreshCurrent = function(){ _origRefresh(); if($('#extdlg').open){ EXT_SEL.clea
 let PC=null, PC_SEL=new Set(), pcTimer=null;
 const PC_ST = {moved:['Pronađeno drugdje','warn'], virtual_found:['Bez datoteke, a postoji','warn'], missing:['Ne postoji','bad'], outside:['Izvan mapa','bad']};
 $('#pc-run').onclick=async()=>{ try{ await api('/api/paths/check',{}); PC_SEL.clear(); toast('Provjera pokrenuta'); pollPc(); }catch(e){ toast(e.message,true); } };
+$('#pc-cancel').onclick=async()=>{ try{ await api('/api/paths/cancel',{}); $('#pc-cancel').disabled=true; pollPc(); }catch(e){ toast(e.message,true); } };
 $('#pc-filter').onchange=()=>renderPc(); $('#pc-q').oninput=()=>renderPc();
 async function loadPc(){ try{ PC=await api('/api/paths'); }catch(e){ return toast(e.message,true); } renderPc(); }
-async function pollPc(){ await loadPc(); clearTimeout(pcTimer); if(PC && PC.running) pcTimer=setTimeout(pollPc,1500); }
+async function pollPc(){ await loadPc(); clearTimeout(pcTimer); if(PC && PC.running) pcTimer=setTimeout(pollPc,700); }
 function renderPc(){
   if(!PC) return;
   const n=[];
   if(!PC.enabled) n.push('<div class="note warn">Za provjeru putanja treba Jellyfin API (JELLYFIN_URL i JELLYFIN_API_KEY).</div>');
   if(PC.error) n.push(`<div class="note warn">${esc(PC.error)}</div>`);
-  if(PC.running) n.push('<div class="note">Provjera u tijeku… (dohvaćam sve stavke iz Jellyfina i uspoređujem s diskom)</div>');
+  if(PC.running){
+    const pg=PC.progress||{}, pct=pg.total?Math.min(100,Math.round(pg.done/pg.total*100)):0;
+    n.push(`<div class="note"><b>${esc(pg.phase||'Provjera u tijeku…')}</b>${pg.total?` · ${pg.done.toLocaleString('hr-HR')} / ${pg.total.toLocaleString('hr-HR')}`:''}
+      <div class="bar" style="margin-top:8px"><i style="width:${pct}%"></i></div></div>`);
+  }
+  if(PC.cancelled && !PC.running) n.push(`<div class="note warn">Provjera je prekinuta.${PC.result?' Prikazani su rezultati prethodne provjere.':''}</div>`);
   if(!PC.result && !PC.running && PC.enabled) n.push('<div class="note">Provjera uzima sve filmove i epizode iz Jellyfina i za svaku provjerava postoji li datoteka na zapisanoj putanji. Za one koje ne postoje traži datoteku drugdje: isto ime, druga velika i mala slova, drugačiji zapis znakova č/ć/ž, ista veličina ili ista oznaka SxxEyy u mapi serije. Koristi zadnje skeniranje diska, pa ako si nešto upravo premjestio, prvo klikni „Skeniraj ponovno”.</div>');
   $('#pc-notes').innerHTML=n.join('');
   $('#pc-run').disabled = PC.running || !PC.enabled;
+  $('#pc-cancel').style.display = PC.running ? '' : 'none';
+  $('#pc-cancel').disabled = (PC.progress||{}).phase==='Prekidam…';
   const r=PC.result; if(!r){ $('#pc-cards').innerHTML=''; $('#pc-table tbody').innerHTML=''; $('#pc-bar').classList.remove('show'); return; }
   const c=r.counts;
   const tile=(t,v,sub,cls)=>`<div class="card"><h3>${t}</h3><div class="big" style="${cls?`color:var(--${cls})`:''}">${v.toLocaleString('hr-HR')}</div><div class="sub">${sub}</div></div>`;
