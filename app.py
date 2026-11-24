@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.3.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -901,7 +901,7 @@ import subprocess
 HEX32 = re.compile(r"^[0-9a-f]{32}$")
 
 
-HELPER_VERSION = 2
+HELPER_VERSION = 3
 
 HELPER_BODY = r'''
 set -u
@@ -987,6 +987,95 @@ op_delmeta() {
   echo "DEL $n"
 }
 
+# ---- baza: ispravak putanja (Jellyfin 10.11+ / 12: data/jellyfin.db, tablica BaseItems) ----
+jf_find_ctl() {
+  JCTL=""; JNAME=""
+  if command -v docker >/dev/null 2>&1; then
+    for i in $(docker ps -a --format '{{.ID}}' 2>/dev/null); do
+      src=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/config"}}{{.Source}}{{end}}{{end}}' "$i" 2>/dev/null)
+      if [ -n "$src" ] && [ "${src%/}" = "${C%/}" ]; then JCTL="docker:$i"; JNAME=$(docker inspect -f '{{.Name}}' "$i" | sed 's#^/##'); break; fi
+    done
+  fi
+  if [ -z "$JCTL" ] && command -v systemctl >/dev/null 2>&1 && systemctl cat jellyfin.service >/dev/null 2>&1; then JCTL="systemd:jellyfin"; JNAME=jellyfin; fi
+}
+jf_ctl() {
+  case "$JCTL" in
+    docker:*) docker "$1" "${JCTL#docker:}" >/dev/null 2>&1 ;;
+    systemd:*) systemctl "$1" jellyfin >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+jf_db() { DB="$DATA/data/jellyfin.db"; [ -f "$DB" ] || DB="$DATA/jellyfin.db"; }
+jf_dbpy() {
+python3 - "$@" <<'PYEOF'
+import sqlite3, sys, uuid
+mode, db, lst = sys.argv[1:4]
+def norm(v):
+    if isinstance(v, (bytes, bytearray)) and len(v) == 16:
+        return uuid.UUID(bytes_le=bytes(v)).hex
+    return str(v).replace("-", "").lower()
+try:
+    con = sqlite3.connect(db, timeout=30)
+    cols = [r[1] for r in con.execute("PRAGMA table_info(BaseItems)")]
+except Exception as e:
+    print("ERR baza se ne može otvoriti: %s" % e); sys.exit(0)
+if "Id" not in cols or "Path" not in cols:
+    print("ERR baza nema očekivanu tablicu BaseItems(Id, Path) - nepoznata verzija sheme, ništa nije mijenjano"); sys.exit(0)
+print("SCHEMA ok")
+ok = miss = upd = 0
+cur = con.cursor()
+for line in open(lst, encoding="utf-8"):
+    r = line.rstrip("\n").split("\t")
+    if len(r) != 3 or not r[1].startswith("/") or not r[2].startswith("/"):
+        continue
+    iid, old, new = r
+    rid = None
+    for (cid, _p) in cur.execute("SELECT Id, Path FROM BaseItems WHERE Path = ?", (old,)).fetchall():
+        if norm(cid) == iid:
+            rid = cid
+            break
+    if rid is None:
+        print("NOMATCH", iid); miss += 1; continue
+    ok += 1
+    if mode == "fix":
+        cur.execute("UPDATE BaseItems SET Path = ? WHERE Id = ? AND Path = ?", (new, rid, old))
+        upd += cur.rowcount
+        print("FIXED", iid)
+if mode == "fix":
+    con.commit()
+con.close()
+print("RES", ok, miss, upd)
+PYEOF
+}
+op_dbcheck() {
+  tmp=$(mktemp); cat > "$tmp"
+  jf_db
+  if [ ! -f "$DB" ]; then echo "ERR Jellyfin baza nije pronađena ($DATA/data/jellyfin.db)"; rm -f "$tmp"; return; fi
+  command -v python3 >/dev/null 2>&1 || { echo "ERR na Jellyfin računalu nema python3 (potreban za izmjenu baze)"; rm -f "$tmp"; return; }
+  jf_find_ctl
+  echo "CTL ${JCTL:-none} ${JNAME:--}"
+  echo "DB $(sz "$DB") $DB"
+  jf_dbpy check "$DB" "$tmp"
+  rm -f "$tmp"
+}
+op_dbfix() {
+  tmp=$(mktemp); cat > "$tmp"
+  jf_db
+  if [ ! -f "$DB" ]; then echo "ERR Jellyfin baza nije pronađena"; rm -f "$tmp"; return; fi
+  command -v python3 >/dev/null 2>&1 || { echo "ERR na Jellyfin računalu nema python3"; rm -f "$tmp"; return; }
+  jf_find_ctl
+  [ -n "$JCTL" ] || { echo "ERR ne znam kako zaustaviti Jellyfin (nije pronađen Docker kontejner ni systemd servis)"; rm -f "$tmp"; return; }
+  jf_ctl stop || { echo "ERR zaustavljanje Jellyfina ($JNAME) nije uspjelo"; rm -f "$tmp"; return; }
+  echo "STOPPED $JNAME"
+  sleep 3
+  ts=$(date +%Y%m%d-%H%M%S)
+  for f in "$DB" "$DB-wal" "$DB-shm"; do [ -f "$f" ] && cp -a "$f" "$f.jellyclean-$ts.bak"; done
+  echo "BACKUP $DB.jellyclean-$ts.bak"
+  jf_dbpy fix "$DB" "$tmp"
+  rm -f "$tmp"
+  if jf_ctl start; then echo "STARTED $JNAME"; else echo "WARN Jellyfin ($JNAME) se nije ponovno pokrenuo - pokreni ga ručno"; fi
+}
+
 main() {
   op=${1:-}; [ $# -gt 0 ] && shift
   case "$op" in
@@ -996,6 +1085,8 @@ main() {
     listmeta) op_listmeta ;;
     dumeta) op_dumeta ;;
     delmeta) op_delmeta ;;
+    dbcheck) op_dbcheck ;;
+    dbfix) op_dbfix ;;
     *) echo "ERR nepoznata operacija '$op'"; exit 2 ;;
   esac
 }
@@ -1253,6 +1344,273 @@ class JFConfig:
 
 
 JFC = JFConfig()
+
+
+# --------------------------------------------------------------------------
+# Provjera putanja: Jellyfin baza ↔ stvarne datoteke
+# --------------------------------------------------------------------------
+
+import unicodedata
+
+
+def unmap_to_jf(local):
+    """Lokalna putanja (JellyClean) -> putanja kako je vidi Jellyfin (obrnuti PATH_MAP)."""
+    if not local:
+        return local
+    for jf, loc in sorted(CFG["path_map"], key=lambda x: -len(x[1])):
+        if local == loc or local.startswith(loc + "/"):
+            return jf + local[len(loc):]
+    return local
+
+
+def _nfc(s):
+    return unicodedata.normalize("NFC", s)
+
+
+class PathCheck:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.result = None
+        self.running = False
+        self.error = None
+        self.items = {}      # id -> zapis (za akcije)
+
+    def _fetch(self):
+        items, start = [], 0
+        while True:
+            res = JF.req("GET", "/Items", {
+                "Recursive": "true", "IncludeItemTypes": "Movie,Episode,Series",
+                "Fields": "Path,MediaSources", "EnableImages": "false", "EnableUserData": "false",
+                "EnableTotalRecordCount": "true", "StartIndex": start, "Limit": 2000}, timeout=300) or {}
+            batch = res.get("Items", [])
+            items.extend(batch)
+            start += len(batch)
+            if not batch or start >= res.get("TotalRecordCount", 0):
+                break
+        return items
+
+    def run(self):
+        if not JF.enabled():
+            raise SSHError("Provjera putanja treba Jellyfin API (JELLYFIN_URL, JELLYFIN_API_KEY)")
+        with self.lock:
+            if self.running:
+                return
+            self.running = True
+            self.error = None
+        try:
+            self._run()
+        except Exception as e:
+            self.error = str(e)
+            log("Provjera putanja:", e)
+        finally:
+            self.running = False
+
+    def _run(self):
+        t0 = time.time()
+        raw = self._fetch()
+        series = {it["Id"]: it for it in raw if it.get("Type") == "Series"}
+        # indeksi iz zadnjeg skeniranja diska
+        with SCAN.lock:
+            files = [(f[0], f[1]) for f in SCAN.files if f[4] in VIDEO_EXT]
+        by_name, by_lower, by_nfc, by_size = {}, {}, {}, {}
+        for path, size in files:
+            b = os.path.basename(path)
+            by_name.setdefault(b, []).append(path)
+            by_lower.setdefault(b.lower(), []).append(path)
+            by_nfc.setdefault(_nfc(b).lower(), []).append(path)
+            if size > 50 * 1024 ** 2:
+                by_size.setdefault(size, []).append(path)
+        roots = [r for _, r in CFG["media"]]
+
+        def under_roots(p):
+            return any(p == r or p.startswith(r.rstrip("/") + "/") for r in roots)
+
+        def best(cands, dbpath):
+            if not cands:
+                return None
+            # najdulji zajednički završetak putanje
+            dbp = dbpath.lower().split("/")
+
+            def score(c):
+                cp = c.lower().split("/")
+                k = 0
+                while k < min(len(cp), len(dbp)) and cp[-1 - k] == dbp[-1 - k]:
+                    k += 1
+                return k
+            return sorted(cands, key=lambda c: (-score(c), c))[0]
+
+        out, counts = [], {"ok": 0, "moved": 0, "missing": 0, "virtual": 0, "virtual_found": 0, "outside": 0}
+        recs = {}
+        for it in raw:
+            t = it.get("Type")
+            if t not in ("Movie", "Episode"):
+                continue
+            iid = it["Id"].replace("-", "").lower()
+            jf_path = it.get("Path") or ""
+            loc_type = it.get("LocationType") or ""
+            ms = it.get("MediaSources") or []
+            jsize = (ms[0].get("Size") if ms else None) or 0
+            name = it.get("Name") or ""
+            label = name
+            if t == "Episode":
+                se = f"S{(it.get('ParentIndexNumber') or 0):02d}E{(it.get('IndexNumber') or 0):02d}"
+                label = f"{it.get('SeriesName') or '?'} {se} · {name}"
+            elif it.get("ProductionYear"):
+                label = f"{name} ({it['ProductionYear']})"
+            rec = {"id": iid, "type": t, "label": label, "jf_path": jf_path, "local": None,
+                   "status": None, "reason": "", "cand_local": None, "cand_jf": None,
+                   "series_id": (it.get("SeriesId") or "").replace("-", "").lower() or None}
+            local = map_jf_path(jf_path) if jf_path else ""
+            rec["local"] = local
+            if not jf_path or loc_type == "Virtual":
+                rec["status"] = "virtual"
+            elif os.path.exists(local):
+                counts["ok"] += 1
+                continue
+            elif not under_roots(local):
+                rec["status"] = "outside"
+                rec["reason"] = "putanja nije unutar medijskih mapa koje JellyClean vidi - provjeri PATH_MAP ili MEDIA_PATHS"
+            else:
+                rec["status"] = "missing"
+            # traženje kandidata
+            cand, reason = None, ""
+            base = os.path.basename(local) if local else ""
+            if base and rec["status"] != "virtual":
+                if by_name.get(base):
+                    cand = best(by_name[base], local)
+                    reason = "ista datoteka pod drugom putanjom (premještena ili promijenjen mount)"
+                elif by_lower.get(base.lower()):
+                    cand = best(by_lower[base.lower()], local)
+                    reason = "razlikuju se samo velika i mala slova u imenu"
+                elif by_nfc.get(_nfc(base).lower()):
+                    cand = best(by_nfc[_nfc(base).lower()], local)
+                    reason = "drugačiji zapis posebnih znakova (Unicode, npr. č/ć/ž)"
+                elif jsize and len(by_size.get(jsize, [])) == 1:
+                    cand = by_size[jsize][0]
+                    reason = "datoteka iste veličine pod drugim imenom"
+            if not cand and t == "Episode":
+                sr = series.get(it.get("SeriesId") or "")
+                sdir = map_jf_path(sr.get("Path")) if sr and sr.get("Path") else None
+                sn, en = it.get("ParentIndexNumber"), it.get("IndexNumber")
+                if sdir and sn is not None and en is not None:
+                    pre = sdir.rstrip("/") + "/"
+                    hits = []
+                    for path, _ in files:
+                        if path.startswith(pre):
+                            m = EPISODE_RE.search(os.path.basename(path))
+                            if m and int(m.group(1)) == sn and int(m.group(2)) == en:
+                                hits.append(path)
+                    if hits:
+                        cand = best(hits, local or sdir)
+                        reason = ("Jellyfin ima epizodu bez datoteke, a datoteka postoji u mapi serije"
+                                  if rec["status"] == "virtual" else "epizoda pronađena pod drugim imenom u mapi serije")
+            if rec["status"] == "virtual":
+                if not cand:
+                    counts["virtual"] += 1     # normalno: epizoda koja nedostaje
+                    continue
+                rec["status"] = "virtual_found"
+            elif cand:
+                rec["status"] = "moved"
+            if cand:
+                rec["cand_local"] = cand
+                rec["cand_jf"] = unmap_to_jf(cand)
+                rec["reason"] = reason
+            counts[rec["status"]] += 1
+            recs[iid] = rec
+            out.append(rec)
+        # analiza prefiksa: ista promjena putanje kod mnogo stavki
+        pairs = {}
+        for r in out:
+            if r["status"] == "moved" and r["jf_path"] and r["cand_jf"]:
+                a, b = r["jf_path"].split("/"), r["cand_jf"].split("/")
+                k = 0
+                while k < min(len(a), len(b)) - 1 and a[-1 - k] == b[-1 - k]:
+                    k += 1
+                key = ("/".join(a[:len(a) - k]) or "/", "/".join(b[:len(b) - k]) or "/")
+                if key[0] != key[1]:
+                    pairs[key] = pairs.get(key, 0) + 1
+        prefixes = [{"from": k[0], "to": k[1], "count": v} for k, v in sorted(pairs.items(), key=lambda x: -x[1]) if v >= 3]
+        out.sort(key=lambda r: ({"moved": 0, "virtual_found": 1, "missing": 2, "outside": 3}[r["status"]], r["label"].lower()))
+        with self.lock:
+            self.items = recs
+            self.result = {"time": now_iso(), "duration": round(time.time() - t0, 1), "total": sum(counts.values()),
+                           "counts": counts, "items": out[:5000], "prefixes": prefixes[:10],
+                           "scan_time": SCAN.finished, "ssh": JFC.enabled()}
+        log(f"Provjera putanja: {counts}")
+
+    # ---------------------------------------------------------- akcije ---
+    def _selected(self, ids, need_cand=True):
+        with self.lock:
+            recs = [self.items[i] for i in ids if i in self.items]
+        if need_cand:
+            recs = [r for r in recs if r["cand_jf"]]
+        return recs
+
+    def notify(self, ids):
+        """Siguran ispravak: javi Jellyfinu da je stara putanja nestala, a nova se pojavila."""
+        recs = self._selected(ids)
+        if not recs:
+            raise SSHError("Nema odabranih stavki s pronađenom datotekom")
+        updates = []
+        for r in recs:
+            if r["jf_path"] and r["status"] == "moved":
+                updates.append({"Path": r["jf_path"], "UpdateType": "Deleted"})
+            updates.append({"Path": r["cand_jf"], "UpdateType": "Created"})
+        JF.req("POST", "/Library/Media/Updated", body={"Updates": updates})
+        series = {r["series_id"] for r in recs if r["series_id"]}
+        for sid in series:
+            try:
+                JF.req("POST", f"/Items/{sid}/Refresh", {"Recursive": "true", "MetadataRefreshMode": "Default",
+                                                         "ImageRefreshMode": "Default"})
+            except Exception:
+                pass
+        log(f"Provjera putanja: Jellyfinu javljeno {len(updates)} promjena")
+        return {"sent": len(updates), "series_refreshed": len(series)}
+
+    def _lines(self, recs):
+        out = []
+        for r in recs:
+            if r["status"] != "moved" or not r["jf_path"] or "\t" in r["jf_path"] + r["cand_jf"] \
+                    or "\n" in r["jf_path"] + r["cand_jf"]:
+                continue
+            out.append(f"{r['id']}\t{r['jf_path']}\t{r['cand_jf']}")
+        return out
+
+    def dbfix(self, ids, dry_run=True):
+        if not JFC.enabled():
+            raise SSHError("Ispravak u bazi treba SSH pristup Jellyfin računalu (kartica Jellyfin config)")
+        lines = self._lines(self._selected(ids))
+        if not lines:
+            raise SSHError("Među odabranima nema stavki koje se mogu ispraviti u bazi "
+                           "(samo 'pronađeno drugdje' s postojećim zapisom putanje)")
+        out = JFC.run("dbcheck" if dry_run else "dbfix", lines=lines, timeout=900)
+        res = {"dry_run": dry_run, "requested": len(lines), "ctl": None, "name": None, "db": None,
+               "db_size": None, "matched": 0, "nomatch": 0, "updated": 0, "backup": None,
+               "stopped": False, "started": False, "warnings": []}
+        for line in out.splitlines():
+            p = line.split(" ", 2)
+            if p[0] == "CTL":
+                res["ctl"], res["name"] = p[1], (p[2] if len(p) > 2 else None)
+            elif p[0] == "DB":
+                res["db_size"], res["db"] = int(p[1]), (p[2] if len(p) > 2 else None)
+            elif p[0] == "RES":
+                q = line.split()
+                res["matched"], res["nomatch"], res["updated"] = int(q[1]), int(q[2]), int(q[3])
+            elif p[0] == "BACKUP":
+                res["backup"] = line[7:]
+            elif p[0] == "STOPPED":
+                res["stopped"] = True
+            elif p[0] == "STARTED":
+                res["started"] = True
+            elif p[0] == "WARN":
+                res["warnings"].append(line[5:])
+        if not dry_run:
+            log(f"Provjera putanja: ispravljeno u bazi {res['updated']} zapisa, kopija {res['backup']}")
+            threading.Thread(target=lambda: (time.sleep(30), self.run()), daemon=True).start()
+        return res
+
+
+PC = PathCheck()
 
 
 # --------------------------------------------------------------------------
@@ -1523,6 +1881,10 @@ class Handler(BaseHTTPRequestHandler):
                                         "sudo": CFG["ssh_sudo"], "helper": CFG["ssh_helper"],
                                         "allow_delete": CFG["allow_delete"],
                                         "jellyfin": JF.enabled()})
+            if u.path == "/api/paths":
+                return self._send(200, {"enabled": JF.enabled(), "running": PC.running, "error": PC.error,
+                                        "result": PC.result, "allow_delete": CFG["allow_delete"],
+                                        "ssh": JFC.enabled()})
             if u.path == "/api/jellyfin/tasks":
                 if not JF.enabled():
                     return self._send(400, {"error": "Jellyfin nije podešen"})
@@ -1570,6 +1932,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not body.get("dry_run") and any(r["ok"] for r in res):
                     threading.Thread(target=lambda: (time.sleep(20), JF.sync()), daemon=True).start()
                 return self._send(200, {"results": res, "trash": CFG["trash"] and not body.get("permanent")})
+            if u.path == "/api/paths/check":
+                if not JF.enabled():
+                    return self._send(400, {"error": "Jellyfin API nije podešen"})
+                if SCAN.running:
+                    return self._send(409, {"error": "Skeniranje diska je u tijeku - pričekaj da završi"})
+                threading.Thread(target=PC.run, daemon=True).start()
+                return self._send(200, {"started": True})
+            if u.path == "/api/paths/notify":
+                return self._send(200, PC.notify(body.get("ids") or []))
+            if u.path == "/api/paths/dbfix":
+                dry = bool(body.get("dry_run", True))
+                if not dry and not CFG["allow_delete"]:
+                    return self._send(403, {"error": "Izmjene su isključene (ALLOW_DELETE=false)"})
+                return self._send(200, PC.dbfix(body.get("ids") or [], dry))
             if u.path.startswith("/api/jfconfig/"):
                 act = u.path.rsplit("/", 1)[1]
                 if act == "orphans":

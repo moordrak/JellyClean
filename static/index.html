@@ -131,6 +131,12 @@ dialog.wide{max-width:1150px}
 .toolbar input,.toolbar select{background:rgba(30,34,43,.85)}
 .sel-bar{background:rgba(23,26,33,.92);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
 @media (max-width:700px){main{padding:10px}.tab.active{padding:14px 12px 18px;border-radius:12px}}
+
+/* zaglavlje: više kartica u jednom redu */
+nav button{padding:7px 10px}
+header{gap:12px}
+#status{font-size:12px;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (max-width:1450px){#status{display:none}}
 </style>
 </head>
 <body>
@@ -142,6 +148,7 @@ dialog.wide{max-width:1150px}
     <button data-tab="browse">Preglednik</button>
     <button data-tab="files">Najveće datoteke</button>
     <button data-tab="jellyfin">Jellyfin</button>
+    <button data-tab="paths">Provjera putanja</button>
     <button data-tab="junk">Smeće i duplikati</button>
     <button data-tab="jfconfig">Jellyfin config</button>
     <button data-tab="trash">Kanta</button>
@@ -214,6 +221,32 @@ dialog.wide{max-width:1150px}
     <span class="sub" id="jf-sum"></span>
   </div>
   <div class="card" style="padding:0"><table id="jf-table"><thead></thead><tbody></tbody></table></div>
+</section>
+
+<!-- PROVJERA PUTANJA -->
+<section class="tab" id="tab-paths">
+  <div class="tab-head"><h2>Provjera putanja</h2><p>Usporedba putanja u Jellyfin bazi sa stvarnim datotekama i ispravak zapisa</p></div>
+  <div id="pc-notes"></div>
+  <div class="toolbar">
+    <button class="btn primary" id="pc-run">Pokreni provjeru</button>
+    <select id="pc-filter">
+      <option value="all">Svi problemi</option>
+      <option value="moved">Pronađeno drugdje</option>
+      <option value="virtual_found">Epizoda bez datoteke, a datoteka postoji</option>
+      <option value="missing">Ne postoji nigdje</option>
+      <option value="outside">Izvan medijskih mapa</option>
+    </select>
+    <label>Traži <input id="pc-q" placeholder="naziv ili putanja"></label>
+    <span class="sub" id="pc-sum"></span>
+  </div>
+  <div class="grid" id="pc-cards" style="margin-bottom:14px"></div>
+  <div id="pc-prefix"></div>
+  <div class="card" style="padding:0"><table id="pc-table"><thead><tr><th style="width:28px"><input type="checkbox" id="pc-all"></th><th>Stavka</th><th>Putanja u Jellyfinu</th><th>Pronađena datoteka</th><th>Stanje</th></tr></thead><tbody></tbody></table></div>
+  <div class="sel-bar" id="pc-bar" style="position:sticky">
+    <b id="pc-selc">0</b><span class="muted">odabrano</span><div class="spacer"></div>
+    <button class="btn" id="pc-notify" title="Jellyfinu se javlja da je stara putanja nestala, a nova se pojavila. Ne dira bazu izravno.">Javi Jellyfinu (sigurno)</button>
+    <button class="btn danger" id="pc-dbfix" title="Mijenja putanju u Jellyfin bazi. Gledanost se čuva.">Ispravi u bazi…</button>
+  </div>
 </section>
 
 <!-- SMEĆE -->
@@ -366,7 +399,7 @@ $$('#nav button').forEach(b=>b.onclick=()=>{
   current=b.dataset.tab; clearSel(); refreshCurrent();
 });
 function refreshCurrent(){
-  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash, jfconfig:()=>loadJc(false)}[current]||(()=>{}))();
+  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash, jfconfig:()=>loadJc(false), paths:loadPc}[current]||(()=>{}))();
 }
 
 // ---------------- pregled ----------------
@@ -483,7 +516,7 @@ async function loadJf(){
   const n=[];
   if(JFD.error) n.push(`<div class="note warn">Jellyfin: ${esc(JFD.error)}</div>`);
   if(JFD.running) n.push('<div class="note">Sinkronizacija u tijeku…</div>');
-  if(JFD.missing_count>0) n.push(`<div class="note warn">${JFD.missing_count} Jellyfin stavki ne postoji na putanji koju ovaj servis vidi (npr. <code>${esc(JFD.missing_on_disk[0].path)}</code>). Ako Jellyfin i JellyClean montiraju medije na različite putanje, postavi <b>PATH_MAP</b>.</div>`);
+  if(JFD.missing_count>0) n.push(`<div class="note warn">${JFD.missing_count} Jellyfin stavki ne postoji na putanji koju ovaj servis vidi (npr. <code>${esc(JFD.missing_on_disk[0].path)}</code>). Ako Jellyfin i JellyClean montiraju medije na različite putanje, postavi <b>PATH_MAP</b>. Detalje i ispravak nađi u kartici <a href="#" data-tabgo="paths" style="color:var(--accent)">Provjera putanja</a>.</div>`);
   $('#jf-notes').innerHTML=n.join('');
   renderJf();
 }
@@ -759,6 +792,82 @@ $('#ext-del').onclick=async()=>{
 // nakon brisanja (confirmDelete zove refreshCurrent) osvježi i prozor ako je otvoren
 const _origRefresh = refreshCurrent;
 refreshCurrent = function(){ _origRefresh(); if($('#extdlg').open){ EXT_SEL.clear(); loadExt(); } };
+
+
+// ---------------- provjera putanja ----------------
+let PC=null, PC_SEL=new Set(), pcTimer=null;
+const PC_ST = {moved:['Pronađeno drugdje','warn'], virtual_found:['Bez datoteke, a postoji','warn'], missing:['Ne postoji','bad'], outside:['Izvan mapa','bad']};
+$('#pc-run').onclick=async()=>{ try{ await api('/api/paths/check',{}); PC_SEL.clear(); toast('Provjera pokrenuta'); pollPc(); }catch(e){ toast(e.message,true); } };
+$('#pc-filter').onchange=()=>renderPc(); $('#pc-q').oninput=()=>renderPc();
+async function loadPc(){ try{ PC=await api('/api/paths'); }catch(e){ return toast(e.message,true); } renderPc(); }
+async function pollPc(){ await loadPc(); clearTimeout(pcTimer); if(PC && PC.running) pcTimer=setTimeout(pollPc,1500); }
+function renderPc(){
+  if(!PC) return;
+  const n=[];
+  if(!PC.enabled) n.push('<div class="note warn">Za provjeru putanja treba Jellyfin API (JELLYFIN_URL i JELLYFIN_API_KEY).</div>');
+  if(PC.error) n.push(`<div class="note warn">${esc(PC.error)}</div>`);
+  if(PC.running) n.push('<div class="note">Provjera u tijeku… (dohvaćam sve stavke iz Jellyfina i uspoređujem s diskom)</div>');
+  if(!PC.result && !PC.running && PC.enabled) n.push('<div class="note">Provjera uzima sve filmove i epizode iz Jellyfina i za svaku provjerava postoji li datoteka na zapisanoj putanji. Za one koje ne postoje traži datoteku drugdje: isto ime, druga velika i mala slova, drugačiji zapis znakova č/ć/ž, ista veličina ili ista oznaka SxxEyy u mapi serije. Koristi zadnje skeniranje diska, pa ako si nešto upravo premjestio, prvo klikni „Skeniraj ponovno”.</div>');
+  $('#pc-notes').innerHTML=n.join('');
+  $('#pc-run').disabled = PC.running || !PC.enabled;
+  const r=PC.result; if(!r){ $('#pc-cards').innerHTML=''; $('#pc-table tbody').innerHTML=''; $('#pc-bar').classList.remove('show'); return; }
+  const c=r.counts;
+  const tile=(t,v,sub,cls)=>`<div class="card"><h3>${t}</h3><div class="big" style="${cls?`color:var(--${cls})`:''}">${v.toLocaleString('hr-HR')}</div><div class="sub">${sub}</div></div>`;
+  $('#pc-cards').innerHTML = [
+    tile('Ispravno',c.ok,'datoteka je na zapisanoj putanji','ok'),
+    tile('Pronađeno drugdje',c.moved,'u bazi je kriva putanja, datoteka postoji',c.moved?'warn':''),
+    tile('Epizode bez datoteke',c.virtual_found,'Jellyfin ih nema povezane, a datoteka postoji',c.virtual_found?'warn':''),
+    tile('Ne postoji',c.missing+c.outside,`nigdje pronađeno${c.outside?` · ${c.outside} izvan mapa`:''}`,(c.missing+c.outside)?'bad':''),
+    tile('Epizode koje nedostaju',c.virtual,'normalno, ako je uključen prikaz epizoda koje nedostaju',''),
+  ].join('');
+  $('#pc-sum').textContent = `${r.total.toLocaleString('hr-HR')} stavki · ${new Date(r.time).toLocaleString('hr-HR')} · ${r.duration}s`;
+  $('#pc-prefix').innerHTML = r.prefixes.length ? `<div class="note warn"><b>Ista promjena putanje kod više stavki</b>. To obično znači promijenjen mount ili putanju biblioteke, a ne pojedinačne greške:<br>${r.prefixes.map(p=>`<code>${esc(p.from)}</code> → <code>${esc(p.to)}</code> (${p.count} stavki)`).join('<br>')}<br>Najbolje je ispraviti mount u Docker kontejneru ili putanju biblioteke u Jellyfinu. Ispravak pojedinačnih zapisa ispod je također moguć.</div>` : '';
+  const f=$('#pc-filter').value, q=$('#pc-q').value.toLowerCase();
+  const rows=r.items.filter(x=>(f==='all'||x.status===f) && (!q || (x.label+' '+x.jf_path+' '+(x.cand_local||'')).toLowerCase().includes(q)));
+  $('#pc-table tbody').innerHTML = rows.slice(0,1500).map(x=>{
+    const st=PC_ST[x.status]||[x.status,''];
+    const can=!!x.cand_jf;
+    return `<tr><td>${can?`<input type="checkbox" class="pcsel" data-id="${x.id}" ${PC_SEL.has(x.id)?'checked':''}>`:''}</td>
+      <td>${esc(x.label)}<div class="sub">${x.type==='Movie'?'film':'epizoda'}</div></td>
+      <td class="path">${x.jf_path?esc(x.jf_path):'<span class="muted">(nema putanje)</span>'}</td>
+      <td class="path">${x.cand_local?esc(x.cand_local)+(x.cand_jf!==x.cand_local?`<div class="sub">Jellyfin: ${esc(x.cand_jf)}</div>`:''):'<span class="muted">–</span>'}</td>
+      <td><span class="pill ${st[1]}">${st[0]}</span>${x.reason?`<div class="sub" style="max-width:260px">${esc(x.reason)}</div>`:''}</td></tr>`;
+  }).join('') || `<tr><td colspan="5" class="empty">${r.total?'Nema problema po ovom filtru 👍':'Nema podataka'}</td></tr>`;
+  updPcSel();
+}
+function updPcSel(){ $('#pc-selc').textContent=PC_SEL.size; $('#pc-bar').classList.toggle('show', PC_SEL.size>0); }
+$('#pc-table').addEventListener('change',e=>{ const c=e.target; if(!c.classList.contains('pcsel')) return; c.checked?PC_SEL.add(c.dataset.id):PC_SEL.delete(c.dataset.id); updPcSel(); });
+$('#pc-all').onchange=e=>{ $$('#pc-table input.pcsel').forEach(c=>{ c.checked=e.target.checked; c.checked?PC_SEL.add(c.dataset.id):PC_SEL.delete(c.dataset.id); }); updPcSel(); };
+$('#pc-notify').onclick=()=>{
+  const ids=[...PC_SEL]; const items=PC.result.items.filter(x=>PC_SEL.has(x.id));
+  $('#dlg-title').textContent='Javi Jellyfinu promjene';
+  $('#dlg-body').innerHTML=`<p>Jellyfinu se za <b>${ids.length}</b> stavki javlja da je stara putanja nestala, a datoteka se pojavila na novoj. Zatim se osvježe pripadajuće serije.</p>
+    <div class="note">Baza se ne dira izravno. Za <b>epizode bez datoteke</b> ovo je pravi ispravak. Kod <b>pronađenog drugdje</b> Jellyfin može napraviti novu stavku s novim ID-em, pa se za nju <b>gubi gledanost</b>. Ako ti je gledanost važna, koristi „Ispravi u bazi”.</div>
+    <div class="dlg-list"><table>${items.map(x=>`<tr><td>${esc(x.label)}</td><td class="path">${esc(x.cand_jf)}</td></tr>`).join('')}</table></div>`;
+  $('#dlg-ok').textContent='Javi Jellyfinu'; $('#dlg-ok').disabled=false;
+  const dlg=$('#dlg'); dlg.showModal(); $('#dlg-cancel').onclick=()=>dlg.close();
+  $('#dlg-ok').onclick=async()=>{ $('#dlg-ok').disabled=true;
+    try{ const r=await api('/api/paths/notify',{ids}); toast(`Poslano ${r.sent} promjena, osvježeno ${r.series_refreshed} serija. Pokreni provjeru ponovno za minutu-dvije.`); dlg.close(); PC_SEL.clear(); renderPc(); }
+    catch(e){ toast(e.message,true); $('#dlg-ok').disabled=false; } };
+};
+$('#pc-dbfix').onclick=async()=>{
+  const ids=[...PC_SEL];
+  let chk; try{ chk=await api('/api/paths/dbfix',{ids,dry_run:true}); }catch(e){ return toast(e.message,true); }
+  const ctl = chk.ctl&&chk.ctl!=='none' ? `${chk.ctl.startsWith('docker')?'Docker kontejner':'systemd servis'} <b>${esc(chk.name||'')}</b>` : null;
+  $('#dlg-title').textContent='Ispravak putanja u Jellyfin bazi';
+  $('#dlg-body').innerHTML = `<p>Pronađeno u bazi: <b>${chk.matched}</b> od ${chk.requested} odabranih zapisa${chk.nomatch?` (${chk.nomatch} se ne podudara i bit će preskočeno)`:''}.</p>
+    <p class="sub">Baza: <code>${esc(chk.db||'')}</code> (${fmt(chk.db_size)})</p>
+    ${ctl?`<div class="note warn">Postupak:<br>1. zaustavlja se ${ctl} (reprodukcija se prekida na nekoliko sekundi)<br>2. radi se sigurnosna kopija baze (<code>jellyfin.db.jellyclean-…bak</code>)<br>3. mijenja se <b>samo</b> putanja odabranih zapisa, a ID i gledanost ostaju<br>4. Jellyfin se ponovno pokreće</div>`
+          :'<div class="note warn">Nije pronađen način da se Jellyfin zaustavi (Docker kontejner ili systemd servis), pa izmjena nije moguća.</div>'}
+    <p class="sub">Ako nešto pođe po zlu: zaustavi Jellyfin i vrati kopiju preko <code>jellyfin.db</code>.</p>`;
+  $('#dlg-ok').textContent='Ispravi u bazi'; $('#dlg-ok').disabled=!(ctl && chk.matched);
+  const dlg=$('#dlg'); dlg.showModal(); $('#dlg-cancel').onclick=()=>dlg.close();
+  $('#dlg-ok').onclick=async()=>{ $('#dlg-ok').disabled=true; $('#dlg-ok').textContent='Radim…';
+    try{ const r=await api('/api/paths/dbfix',{ids,dry_run:false});
+      toast(`Ispravljeno ${r.updated} zapisa. Kopija: ${r.backup||'-'}${r.started?'':' · Jellyfin se nije pokrenuo, pokreni ga ručno!'}`, !r.started);
+      dlg.close(); PC_SEL.clear(); setTimeout(pollPc,1000);
+    }catch(e){ toast(e.message,true); $('#dlg-ok').disabled=false; $('#dlg-ok').textContent='Ispravi u bazi'; } };
+};
 
 // ---------------- start ----------------
 pollScan();

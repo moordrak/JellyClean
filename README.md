@@ -18,6 +18,12 @@ Web servis za pregled i čišćenje prostora na Jellyfin poslužitelju. Nema van
   - čišćenje slika u cacheu, ostataka transkodiranja (starijih od 1 sata), ostatka cachea i logova starijih od X dana, uvijek s pregledom prije brisanja
   - **siročad u `metadata/library`**: mape filmova i epizoda koje više ne postoje. Uspoređuju se s Jellyfin API-jem, a svaka se još pojedinačno provjerava prije brisanja
   - baza (`*.db`) se nikad ne dira
+- **Provjera putanja**: uspoređuje putanje u Jellyfin bazi sa stvarnim datotekama.
+  - Ako na zapisanoj putanji nema datoteke, traži je drugdje: isto ime, druga velika i mala slova, drugačiji Unicode zapis znakova (č/ć/ž), ista veličina, ista oznaka SxxEyy u mapi serije.
+  - Prepoznaje i epizode koje Jellyfin ima bez datoteke, iako ona postoji (poruka *Unable to find a valid media source to play*).
+  - Kad se ista promjena putanje ponavlja kod više stavki, javlja da je vjerojatno promijenjen mount ili putanja biblioteke.
+  - **Siguran ispravak:** Jellyfinu se preko API-ja javi promjena (`/Library/Media/Updated`) i osvježi se serija.
+  - **Ispravak u bazi** (uz SSH pristup): zaustavi Jellyfin, napravi kopiju `jellyfin.db`, promijeni samo putanje odabranih zapisa (ID i gledanost ostaju) i ponovno ga pokrene. Ako struktura baze nije prepoznata, ništa se ne mijenja.
 - **Smeće i duplikati**: sample videi, nedovršena preuzimanja (`.part`, `.!qB`), `.exe` i `.url` datoteke iz releasea, rar arhive, prazne datoteke i mape, više verzija istog filma ili epizode.
 - **Kanta**: obrisane stavke se premještaju u `.jellyclean-trash` unutar iste mape, što je trenutno jer se ništa ne kopira. Iz kante se mogu vratiti, a automatski se prazni nakon `TRASH_DAYS` dana.
 - **Hardlinkovi**: servis označava datoteke koje imaju još jednu kopiju (tipično *arr + qBittorrent) i upozorava da njihovo brisanje ne oslobađa prostor dok se ne obriše i torrent.
