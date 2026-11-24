@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.4.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -949,7 +949,7 @@ import subprocess
 HEX32 = re.compile(r"^[0-9a-f]{32}$")
 
 
-HELPER_VERSION = 3
+HELPER_VERSION = 4
 
 HELPER_BODY = r'''
 set -u
@@ -1124,6 +1124,51 @@ op_dbfix() {
   if jf_ctl start; then echo "STARTED $JNAME"; else echo "WARN Jellyfin ($JNAME) se nije ponovno pokrenuo - pokreni ga ručno"; fi
 }
 
+# ---- dijagnoza reprodukcije: vidi li Jellyfin datoteku, ffprobe, logovi ----
+op_fileinfo() {
+  p=${1:-}; term=${2:-}; iid=${3:-}
+  case "$p" in /*) ;; *) echo "ERR neispravna putanja"; return ;; esac
+  case "$p" in *..*|*"
+"*) echo "ERR neispravna putanja"; return ;; esac
+  jf_find_ctl
+  echo "CTL ${JCTL:-none} ${JNAME:--}"
+  case "$JCTL" in
+    docker:*)
+      cid=${JCTL#docker:}
+      if docker exec "$cid" test -e "$p" 2>/dev/null; then echo "CEXISTS 1"; else echo "CEXISTS 0"; fi
+      if docker exec "$cid" test -r "$p" 2>/dev/null; then echo "CREAD 1"; else echo "CREAD 0"; fi
+      docker exec "$cid" sh -c 'ls -lnL -- "$1" 2>&1 | head -1' _ "$p" | sed 's/^/CLS /'
+      docker exec "$cid" sh -c 'ls -1 -- "$(dirname "$1")" 2>&1 | head -40' _ "$p" | sed 's/^/CDIR /'
+      fp=""
+      for f in /usr/lib/jellyfin-ffmpeg/ffprobe /usr/bin/ffprobe; do docker exec "$cid" test -x "$f" 2>/dev/null && { fp=$f; break; }; done
+      if [ -n "$fp" ]; then
+        out=$(timeout 60 docker exec "$cid" "$fp" -v error -show_entries format=format_name,duration:stream=index,codec_type,codec_name -of compact "$p" 2>&1); rc=$?
+        printf '%s\n' "$out" | head -30 | sed 's/^/PROBE /'; echo "PROBERC $rc"
+      else echo "PROBERC -"; fi ;;
+    *)
+      if [ -e "$p" ]; then echo "CEXISTS 1"; else echo "CEXISTS 0"; fi
+      if [ -r "$p" ]; then echo "CREAD 1"; else echo "CREAD 0"; fi
+      ls -lnL -- "$p" 2>&1 | head -1 | sed 's/^/CLS /'
+      ls -1 -- "$(dirname "$p")" 2>&1 | head -40 | sed 's/^/CDIR /'
+      fp=""
+      for f in /usr/lib/jellyfin-ffmpeg/ffprobe /usr/bin/ffprobe; do [ -x "$f" ] && { fp=$f; break; }; done
+      if [ -n "$fp" ]; then
+        out=$(timeout 60 "$fp" -v error -show_entries format=format_name,duration:stream=index,codec_type,codec_name -of compact "$p" 2>&1); rc=$?
+        printf '%s\n' "$out" | head -30 | sed 's/^/PROBE /'; echo "PROBERC $rc"
+      else echo "PROBERC -"; fi ;;
+  esac
+  # Jellyfin log: retci sa putanjom, ID-em ili nazivom stavke koji izgledaju kao greška
+  for f in $(ls -t "$LOG"/log_*.log "$LOG"/jellyfin*.log 2>/dev/null | head -2); do
+    if [ -n "$term" ]; then m=$(grep -F -e "$p" -e "$iid" -e "$term" "$f" 2>/dev/null)
+    else m=$(grep -F -e "$p" -e "$iid" "$f" 2>/dev/null); fi
+    printf '%s\n' "$m" | grep -iE 'err|warn|exception|fail|not found|could not|denied|unable' | tail -25 | sed 's/^/LOG /'
+  done
+  # najnoviji FFmpeg log koji spominje ovu datoteku
+  m=""
+  for f in $(ls -t "$LOG"/FFmpeg.*.log 2>/dev/null | head -40); do grep -qF -- "$p" "$f" 2>/dev/null && { m=$f; break; }; done
+  if [ -n "$m" ]; then echo "FFLOG $(basename "$m")"; tail -30 "$m" | sed 's/^/FF /'; fi
+}
+
 main() {
   op=${1:-}; [ $# -gt 0 ] && shift
   case "$op" in
@@ -1135,6 +1180,7 @@ main() {
     delmeta) op_delmeta ;;
     dbcheck) op_dbcheck ;;
     dbfix) op_dbfix ;;
+    fileinfo) op_fileinfo "$@" ;;
     *) echo "ERR nepoznata operacija '$op'"; exit 2 ;;
   esac
 }
@@ -1722,6 +1768,261 @@ PC = PathCheck()
 
 
 # --------------------------------------------------------------------------
+# Dijagnoza reprodukcije: "Zašto se ne pušta?"
+# --------------------------------------------------------------------------
+
+PLAYBACK_ERR = {
+    "NotAllowed": "korisnik nema dopuštenje za reprodukciju (postavke korisnika u Jellyfinu)",
+    "NoCompatibleStream": "nema kompatibilnog toka, a ni transkodiranje ga ne može napraviti",
+    "RateLimitExceeded": "prekoračeno ograničenje istovremenih reprodukcija",
+}
+
+
+def _admin_user():
+    users = JF.req("GET", "/Users") or []
+    return next((u for u in users if (u.get("Policy") or {}).get("IsAdministrator")), users[0] if users else None)
+
+
+def diag_search(q):
+    res = JF.req("GET", "/Items", {"searchTerm": q, "Recursive": "true", "IncludeItemTypes": "Movie,Episode,Series",
+                                   "Limit": 30, "Fields": "Path", "EnableImages": "false"}) or {}
+    out = []
+    for it in res.get("Items", []):
+        lab = it.get("Name") or "?"
+        if it.get("Type") == "Episode":
+            lab = f"{it.get('SeriesName') or '?'} S{(it.get('ParentIndexNumber') or 0):02d}E{(it.get('IndexNumber') or 0):02d} · {lab}"
+        elif it.get("ProductionYear"):
+            lab += f" ({it['ProductionYear']})"
+        out.append({"id": it["Id"].replace("-", "").lower(), "type": it.get("Type"), "label": lab})
+    return out
+
+
+def diag_episodes(series_id):
+    admin = _admin_user()
+    params = {"Fields": "Path", "EnableImages": "false"}
+    if admin:
+        params["UserId"] = admin["Id"]
+    res = JF.req("GET", f"/Shows/{series_id}/Episodes", params) or {}
+    out = []
+    for it in res.get("Items", []):
+        out.append({"id": it["Id"].replace("-", "").lower(), "type": "Episode",
+                    "label": f"S{(it.get('ParentIndexNumber') or 0):02d}E{(it.get('IndexNumber') or 0):02d} · {it.get('Name') or '?'}",
+                    "virtual": (it.get("LocationType") == "Virtual" or not it.get("Path"))})
+    return out
+
+
+def _find_candidate(path, it):
+    """Gdje je datoteka zapravo (iz zadnjeg skeniranja diska)."""
+    with SCAN.lock:
+        files = [f[0] for f in SCAN.files if f[4] in VIDEO_EXT]
+    base = os.path.basename(path) if path else ""
+    if base:
+        for cmp in (lambda b: b, lambda b: b.lower(), lambda b: _nfc(b).lower()):
+            hits = [f for f in files if cmp(os.path.basename(f)) == cmp(base)]
+            if hits:
+                return hits[0]
+    if it.get("Type") == "Episode" and it.get("SeriesId"):
+        try:
+            sr = (JF.req("GET", "/Items", {"Ids": it["SeriesId"], "Recursive": "true", "Fields": "Path"}) or {}).get("Items", [])
+        except Exception:
+            sr = []
+        sdir = map_jf_path(sr[0].get("Path")) if sr and sr[0].get("Path") else None
+        sn, en = it.get("ParentIndexNumber"), it.get("IndexNumber")
+        if sdir and sn is not None and en is not None:
+            for f in files:
+                if f.startswith(sdir.rstrip("/") + "/"):
+                    m = EPISODE_RE.search(os.path.basename(f))
+                    if m and int(m.group(1)) == sn and int(m.group(2)) == en:
+                        return f
+    return None
+
+
+def diagnose(iid):
+    if not JF.enabled():
+        raise SSHError("Dijagnoza treba Jellyfin API (JELLYFIN_URL, JELLYFIN_API_KEY)")
+    if not HEX32.match(iid):
+        raise SSHError("Neispravan ID stavke")
+    res = JF.req("GET", "/Items", {"Ids": iid, "Recursive": "true", "Fields": "Path,MediaSources,MediaStreams",
+                                   "EnableImages": "false"}) or {}
+    items = res.get("Items") or []
+    if not items:
+        raise SSHError("Stavka nije pronađena u Jellyfinu")
+    it = items[0]
+    t = it.get("Type")
+    label = it.get("Name") or "?"
+    if t == "Episode":
+        label = f"{it.get('SeriesName') or '?'} S{(it.get('ParentIndexNumber') or 0):02d}E{(it.get('IndexNumber') or 0):02d} · {label}"
+    path = it.get("Path") or ""
+    loc_type = it.get("LocationType") or ""
+    ms = it.get("MediaSources") or []
+    checks, concl, fixes = [], [], []
+    d = {"id": iid, "label": label, "type": t, "path": path, "checks": checks, "conclusions": concl,
+         "fixes": fixes, "logs": [], "ffmpeg": [], "fflog": None, "dir": [], "probe": [], "candidate": None,
+         "candidate_jf": None, "ssh": JFC.enabled(), "time": now_iso()}
+
+    def chk(name, ok, detail=""):
+        checks.append({"name": name, "ok": ok, "detail": detail})
+
+    # 1) zapis u bazi
+    virtual = (not path) or loc_type == "Virtual"
+    chk("Zapis u Jellyfinu", not virtual,
+        f"{'film' if t == 'Movie' else 'epizoda'} · {loc_type or '?'}" + ("" if path else " · bez putanje datoteke"))
+    if path:
+        chk("Putanja u bazi", True, path)
+    chk("Izvori u bazi (MediaSources)", bool(ms), f"{len(ms)} izvor(a)" if ms else "nema nijednog izvora")
+
+    # 2) PlaybackInfo
+    pi_err, pi_sources = None, None
+    try:
+        admin = _admin_user()
+        q = {"UserId": admin["Id"]} if admin else None
+        pi = JF.req("POST", f"/Items/{iid}/PlaybackInfo", q, body={}) or {}
+        pi_err = pi.get("ErrorCode")
+        pi_sources = len(pi.get("MediaSources") or [])
+        chk("PlaybackInfo (što Jellyfin nudi klijentu)", bool(pi_sources) and not pi_err,
+            (f"greška: {pi_err}" if pi_err else "") + (f"{' · ' if pi_err else ''}{pi_sources} izvor(a) za reprodukciju"))
+    except urllib.error.HTTPError as e:
+        chk("PlaybackInfo (što Jellyfin nudi klijentu)", False, f"HTTP {e.code}")
+        pi_sources = 0
+    except Exception as e:
+        chk("PlaybackInfo (što Jellyfin nudi klijentu)", False, str(e)[:120])
+
+    # 3) plugin biblioteka?
+    plibs = []
+    try:
+        plibs = JF.plugin_libraries()
+    except Exception:
+        pass
+    plugin = next((pl for pl in plibs for l in pl["locations"] if path == l or path.startswith(l + "/")), None) if path else None
+
+    # 4) datoteka na NAS-u (kako je vidi JellyClean)
+    local = map_jf_path(path) if path else ""
+    local_exists = bool(local) and os.path.exists(local)
+    if plugin:
+        chk("Datoteka na NAS-u (JellyClean)", None, f"stavka iz plugin biblioteke „{plugin['name']}” ({plugin['plugin']}) - provjerava se samo na Jellyfin računalu")
+    elif path:
+        chk("Datoteka na NAS-u (JellyClean)", local_exists, local)
+    cand = None
+    if not local_exists and not plugin:
+        cand = _find_candidate(local, it)
+        if cand:
+            d["candidate"], d["candidate_jf"] = cand, unmap_to_jf(cand)
+            chk("Datoteka pronađena drugdje", True, cand)
+
+    # 5) Jellyfin računalo: kontejner, ffprobe, logovi
+    r = {"cexists": None, "cread": None, "cls": "", "probe_rc": None}
+    if JFC.enabled() and path:
+        try:
+            out = JFC.run("fileinfo", (path, it.get("Name") or "", iid), timeout=180)
+            for line in out.splitlines():
+                k, _, v = line.partition(" ")
+                if k == "CEXISTS":
+                    r["cexists"] = v.strip() == "1"
+                elif k == "CREAD":
+                    r["cread"] = v.strip() == "1"
+                elif k == "CLS":
+                    r["cls"] = v
+                elif k == "CDIR":
+                    d["dir"].append(v)
+                elif k == "PROBE":
+                    d["probe"].append(v)
+                elif k == "PROBERC":
+                    r["probe_rc"] = None if v.strip() == "-" else int(v.strip() or 0)
+                elif k == "LOG":
+                    d["logs"].append(v)
+                elif k == "FFLOG":
+                    d["fflog"] = v
+                elif k == "FF":
+                    d["ffmpeg"].append(v)
+            chk("Datoteka u Jellyfin kontejneru", r["cexists"], path)
+            if r["cexists"]:
+                chk("Jellyfin je može čitati", r["cread"], r["cls"])
+                if r["probe_rc"] is not None:
+                    bad = r["probe_rc"] != 0 or any(re.search(r"error|invalid|moov atom|could not|failed", x, re.I) for x in d["probe"])
+                    chk("ffprobe (čitanje sadržaja)", not bad, " · ".join(d["probe"][:4])[:300] or "u redu")
+                    r["probe_bad"] = bad
+        except SSHError as e:
+            chk("Jellyfin računalo (SSH)", False, str(e)[:200])
+    elif path:
+        chk("Jellyfin računalo (SSH)", None, "nije podešeno - bez provjere unutar kontejnera i logova")
+
+    # 6) zaključak
+    def fix(kind, text):
+        fixes.append({"kind": kind, "text": text})
+    if virtual:
+        if cand:
+            concl.append(("bad", "Jellyfin ovu epizodu ima samo kao zapis bez datoteke, a datoteka postoji: "
+                                 f"{cand}. Zato javlja „Unable to find a valid media source”."))
+            fix("notify", "Javi Jellyfinu da datoteka postoji (pa osvježi seriju)")
+        else:
+            concl.append(("bad", "Jellyfin ovu epizodu ima samo kao zapis bez datoteke, a datoteka ne postoji ni na NAS-u. "
+                                 "To je epizoda koja nedostaje (prikazuje se jer je uključen prikaz epizoda koje nedostaju)."))
+    elif r["cexists"] is False or (r["cexists"] is None and not local_exists and not plugin):
+        if local_exists and r["cexists"] is False:
+            concl.append(("bad", "JellyClean vidi datoteku na NAS-u, ali je Jellyfin kontejner na toj putanji NE vidi. "
+                                 "Vjerojatno je problem u mountu (Docker volumen) ili mapiranju putanje biblioteke."))
+        else:
+            concl.append(("bad", "Datoteka ne postoji na putanji koju Jellyfin ima zapisanu u bazi."))
+        if cand:
+            concl.append(("info", f"Datoteka je pronađena ovdje: {cand} (za Jellyfin: {unmap_to_jf(cand)})."))
+            fix("pathcheck", "Ispravi putanju u kartici Provjera putanja (čuva gledanost)")
+            fix("notify", "Ili javi Jellyfinu novu datoteku (može dobiti novi ID)")
+        if d["dir"]:
+            concl.append(("info", "Sadržaj mape u kontejneru prikazan je ispod: provjeri razlikuje li se ime (velika i mala slova, posebni znakovi)."))
+    elif r["cread"] is False:
+        concl.append(("bad", f"Jellyfin vidi datoteku, ali je ne može čitati (dozvole): {r['cls']}. "
+                             "Provjeri vlasnika i dozvole (PUID/PGID kontejnera)."))
+    elif r.get("probe_bad"):
+        concl.append(("bad", "ffprobe ne može ispravno pročitati datoteku: vjerojatno je oštećena, nepotpuna "
+                             "(npr. prekinuto preuzimanje) ili je format neispravan. Pogledaj ispis ffprobe ispod."))
+    elif pi_err:
+        concl.append(("bad", f"Jellyfin odbija reprodukciju: {pi_err} - {PLAYBACK_ERR.get(pi_err, 'nepoznata greška')}."))
+    elif not ms or pi_sources == 0:
+        concl.append(("bad", "Datoteka je u redu, ali Jellyfin za nju nema izvor u bazi. Najčešće pomaže osvježavanje stavke."))
+        fix("refresh", "Osvježi stavku (ponovno očitaj datoteku)")
+    elif any(re.search(r"error|failed|invalid|exited with code", x, re.I) for x in d["ffmpeg"]):
+        concl.append(("bad", f"Zadnje transkodiranje ove datoteke nije uspjelo (FFmpeg log {d['fflog']}). "
+                             "Uzrok je u ispisu ispod; najčešće je to hardversko kodiranje ili kodek koji ffmpeg ne podržava."))
+    elif d["logs"]:
+        concl.append(("warn", "Na poslužitelju nije pronađen očit problem, ali Jellyfin log ima upozorenja za ovu stavku (ispod)."))
+    else:
+        concl.append(("ok", "Na poslužitelju nije pronađen problem: datoteka postoji, čitljiva je i Jellyfin nudi izvor. "
+                            "Greška je vjerojatno do klijenta (format ili kodek koji uređaj ne podržava) ili do mreže. "
+                            "Pokušaj pustiti ponovno pa odmah pokreni dijagnozu - tada će se greška vidjeti u logu."))
+    if plugin and not virtual:
+        concl.append(("info", f"Stavka je iz plugin biblioteke „{plugin['name']}” ({plugin['plugin']}), pa je datoteka zapravo symlink na izvornu datoteku."))
+    if not d["ssh"] and not virtual:
+        concl.append(("info", "Za provjeru unutar Jellyfin kontejnera, ffprobe i logove podesi SSH pristup (kartica Jellyfin config)."))
+    if not any(f["kind"] == "refresh" for f in fixes) and not virtual:
+        fix("refresh", "Osvježi stavku u Jellyfinu")
+    d["conclusions"] = [{"level": a, "text": b} for a, b in concl]
+    return d
+
+
+def diag_fix(iid, kind, cand_jf=None):
+    if not HEX32.match(iid or ""):
+        raise SSHError("Neispravan ID")
+    if kind == "refresh":
+        JF.req("POST", f"/Items/{iid}/Refresh", {"MetadataRefreshMode": "FullRefresh", "ImageRefreshMode": "Default",
+                                                 "ReplaceAllMetadata": "false", "ReplaceAllImages": "false"})
+        return {"ok": True, "msg": "Jellyfin osvježava stavku - pričekaj malo pa pokušaj pustiti ponovno."}
+    if kind == "notify":
+        if not cand_jf or not cand_jf.startswith("/"):
+            raise SSHError("Nema pronađene datoteke")
+        JF.req("POST", "/Library/Media/Updated", body={"Updates": [{"Path": cand_jf, "UpdateType": "Created"}]})
+        try:
+            res = (JF.req("GET", "/Items", {"Ids": iid, "Recursive": "true"}) or {}).get("Items") or []
+            sid = res[0].get("SeriesId") if res else None
+            if sid:
+                JF.req("POST", f"/Items/{sid}/Refresh", {"Recursive": "true", "MetadataRefreshMode": "Default",
+                                                         "ImageRefreshMode": "Default"})
+        except Exception:
+            pass
+        return {"ok": True, "msg": "Jellyfinu je javljena datoteka i serija se osvježava. Za minutu-dvije pokušaj ponovno."}
+    raise SSHError("Nepoznata akcija")
+
+
+# --------------------------------------------------------------------------
 # Pozadinski poslovi
 # --------------------------------------------------------------------------
 
@@ -1995,6 +2296,12 @@ class Handler(BaseHTTPRequestHandler):
                                         "cancelled": PC.cancelled, "progress": PC.progress,
                                         "result": PC.result, "allow_delete": CFG["allow_delete"],
                                         "ssh": JFC.enabled()})
+            if u.path == "/api/diag/search":
+                if not JF.enabled():
+                    return self._send(400, {"error": "Jellyfin API nije podešen"})
+                return self._send(200, {"items": diag_search(q.get("q", "")[:100])})
+            if u.path == "/api/diag/episodes":
+                return self._send(200, {"items": diag_episodes(re.sub(r"[^0-9a-fA-F-]", "", q.get("series", "")))})
             if u.path == "/api/jellyfin/tasks":
                 if not JF.enabled():
                     return self._send(400, {"error": "Jellyfin nije podešen"})
@@ -2049,6 +2356,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(409, {"error": "Skeniranje diska je u tijeku - pričekaj da završi"})
                 threading.Thread(target=PC.run, daemon=True).start()
                 return self._send(200, {"started": True})
+            if u.path == "/api/diag":
+                return self._send(200, diagnose((body.get("id") or "").replace("-", "").lower()))
+            if u.path == "/api/diag/fix":
+                return self._send(200, diag_fix((body.get("id") or "").replace("-", "").lower(), body.get("kind"),
+                                                body.get("candidate_jf")))
             if u.path == "/api/paths/cancel":
                 return self._send(200, PC.cancel())
             if u.path == "/api/paths/notify":

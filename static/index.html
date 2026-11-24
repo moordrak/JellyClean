@@ -137,6 +137,19 @@ nav button{padding:7px 10px}
 header{gap:12px}
 #status{font-size:12px;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media (max-width:1450px){#status{display:none}}
+
+/* dijagnoza */
+.dg-concl{border-radius:8px;padding:10px 12px;margin:0 0 8px;font-size:13.5px}
+.dg-concl.bad{background:#3a1416;border:1px solid #6e2226;color:#ffd1cd}
+.dg-concl.warn{background:#2a2312;border:1px solid #5e4614;color:#e8cf91}
+.dg-concl.ok{background:#12281a;border:1px solid #235c2c;color:#b7ebc3}
+.dg-concl.info{background:#1b2230;border:1px solid #2c3a52;color:#b9c7dd}
+.dg-chk td{padding:5px 8px;font-size:13px;vertical-align:top}
+.dg-chk .i{width:22px;font-weight:700}
+.dg-pre{background:#0b0d12;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-family:var(--mono);font-size:11.5px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow:auto;margin:6px 0 12px}
+.dg-item{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;cursor:pointer}
+.dg-item:hover{background:rgba(255,255,255,.05)}
+.dg-h{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:14px 0 4px;font-weight:600}
 </style>
 </head>
 <body>
@@ -226,6 +239,14 @@ header{gap:12px}
 <!-- PROVJERA PUTANJA -->
 <section class="tab" id="tab-paths">
   <div class="tab-head"><h2>Provjera putanja</h2><p>Usporedba putanja u Jellyfin bazi sa stvarnim datotekama i ispravak zapisa</p></div>
+  <div class="card" style="margin-bottom:16px">
+    <h3>Zašto se ne pušta?</h3>
+    <div class="toolbar" style="margin:0">
+      <input id="dg-q" placeholder="naziv filma ili serije, npr. Warehouse 13" style="flex:1;min-width:260px">
+      <span class="sub">Odaberi film ili epizodu za dijagnozu reprodukcije</span>
+    </div>
+    <div id="dg-res" style="margin-top:8px"></div>
+  </div>
   <div id="pc-notes"></div>
   <div class="toolbar">
     <button class="btn primary" id="pc-run">Pokreni provjeru</button>
@@ -311,6 +332,11 @@ header{gap:12px}
   </div>
   <div class="dlg-list"><table id="ext-table"><thead><tr><th style="width:28px"><input type="checkbox" id="ext-all"></th><th>Putanja</th><th class="num">Veličina</th><th class="num">Izmijenjeno</th><th></th></tr></thead><tbody></tbody></table></div>
   <div class="row"><span class="sub" id="ext-sel" style="margin-right:auto"></span><button class="btn" id="ext-browse">Otvori u „Najveće datoteke”</button><button class="btn danger" id="ext-del" disabled>Obriši odabrano</button></div>
+</dialog>
+
+<dialog id="diagdlg" class="wide">
+  <div class="head" style="display:flex;align-items:center;gap:12px"><h3 id="dg-title" style="margin:0">Dijagnoza</h3><span class="sub" id="dg-sub"></span><button class="btn" id="dg-close" style="margin-left:auto">Zatvori ✕</button></div>
+  <div id="dg-body" style="max-height:72vh;overflow:auto;margin-top:12px"></div>
 </dialog>
 
 <dialog id="dlg">
@@ -845,7 +871,7 @@ function renderPc(){
       <td>${esc(x.label)}<div class="sub">${x.type==='Movie'?'film':'epizoda'}</div></td>
       <td class="path">${x.jf_path?esc(x.jf_path):'<span class="muted">(nema putanje)</span>'}</td>
       <td class="path">${x.cand_local?esc(x.cand_local)+(x.cand_jf!==x.cand_local?`<div class="sub">Jellyfin: ${esc(x.cand_jf)}</div>`:''):'<span class="muted">–</span>'}</td>
-      <td><span class="pill ${st[1]}">${st[0]}</span>${x.reason?`<div class="sub" style="max-width:260px">${esc(x.reason)}</div>`:''}</td></tr>`;
+      <td><span class="pill ${st[1]}">${st[0]}</span>${x.reason?`<div class="sub" style="max-width:260px">${esc(x.reason)}</div>`:''}<button class="btn" style="margin-top:6px;padding:3px 9px;font-size:12px" data-diag="${x.id}">Zašto?</button></td></tr>`;
   }).join('') || `<tr><td colspan="5" class="empty">${r.total?'Nema problema po ovom filtru 👍':'Nema podataka'}</td></tr>`;
   updPcSel();
 }
@@ -882,6 +908,49 @@ $('#pc-dbfix').onclick=async()=>{
       dlg.close(); PC_SEL.clear(); setTimeout(pollPc,1000);
     }catch(e){ toast(e.message,true); $('#dlg-ok').disabled=false; $('#dlg-ok').textContent='Ispravi u bazi'; } };
 };
+
+
+// ---------------- dijagnoza reprodukcije ----------------
+let dgTimer=null;
+$('#dg-q').oninput=()=>{ clearTimeout(dgTimer); dgTimer=setTimeout(dgSearch,350); };
+async function dgSearch(){
+  const q=$('#dg-q').value.trim(); if(q.length<2){ $('#dg-res').innerHTML=''; return; }
+  let r; try{ r=await api('/api/diag/search?q='+encodeURIComponent(q)); }catch(e){ $('#dg-res').innerHTML=`<div class="sub">${esc(e.message)}</div>`; return; }
+  $('#dg-res').innerHTML = r.items.map(x=>`<div class="dg-item" data-${x.type==='Series'?'series':'diag'}="${x.id}"><span class="pill">${x.type==='Series'?'serija':x.type==='Movie'?'film':'epizoda'}</span>${esc(x.label)}${x.type==='Series'?' <span class="sub">→ prikaži epizode</span>':''}</div>`).join('') || '<div class="sub">Nema rezultata</div>';
+}
+async function dgEpisodes(sid, el){
+  let r; try{ r=await api('/api/diag/episodes?series='+sid); }catch(e){ return toast(e.message,true); }
+  const box=document.createElement('div'); box.style.cssText='margin:4px 0 8px 18px;max-height:300px;overflow:auto;border-left:2px solid var(--line);padding-left:8px';
+  box.innerHTML=r.items.map(x=>`<div class="dg-item" data-diag="${x.id}">${esc(x.label)}${x.virtual?' <span class="pill warn">bez datoteke</span>':''}</div>`).join('') || '<div class="sub">Nema epizoda</div>';
+  el.after(box);
+}
+document.addEventListener('click', e=>{
+  const s=e.target.closest('[data-series]'); if(s){ if(!s.nextElementSibling || !s.nextElementSibling.querySelector('[data-diag]')) dgEpisodes(s.dataset.series, s); return; }
+  const d=e.target.closest('[data-diag]'); if(d) runDiag(d.dataset.diag);
+});
+$('#dg-close').onclick=()=>$('#diagdlg').close();
+async function runDiag(id){
+  const dlg=$('#diagdlg'); if(!dlg.open) dlg.showModal();
+  $('#dg-title').textContent='Dijagnoza…'; $('#dg-sub').textContent='';
+  $('#dg-body').innerHTML='<div class="empty">Provjeravam Jellyfin, datoteku, kontejner, ffprobe i logove… (do minute)</div>';
+  let r; try{ r=await api('/api/diag',{id}); }catch(e){ $('#dg-body').innerHTML=`<div class="dg-concl bad">${esc(e.message)}</div>`; $('#dg-title').textContent='Dijagnoza'; return; }
+  $('#dg-title').textContent=r.label; $('#dg-sub').textContent=(r.type==='Movie'?'film':'epizoda')+' · '+new Date(r.time).toLocaleTimeString('hr-HR');
+  const icon=v=> v===true?'<span class="i" style="color:var(--ok)">✓</span>': v===false?'<span class="i" style="color:var(--bad)">✗</span>':'<span class="i muted">–</span>';
+  let h = r.conclusions.map(c=>`<div class="dg-concl ${c.level}">${esc(c.text)}</div>`).join('');
+  if(r.fixes.length) h += `<div class="toolbar" style="margin:10px 0">${r.fixes.map(f=>`<button class="btn ${f.kind==='notify'||f.kind==='refresh'?'primary':''}" data-dgfix="${f.kind}">${esc(f.text)}</button>`).join('')}</div>`;
+  h += `<div class="dg-h">Provjere</div><table class="dg-chk">${r.checks.map(c=>`<tr><td class="i">${icon(c.ok)}</td><td><b>${esc(c.name)}</b><div class="sub path">${esc(c.detail||'')}</div></td></tr>`).join('')}</table>`;
+  if(r.dir.length) h += `<div class="dg-h">Sadržaj mape u Jellyfin kontejneru</div><div class="dg-pre">${r.dir.map(esc).join('\n')}</div>`;
+  if(r.probe.length) h += `<div class="dg-h">ffprobe</div><div class="dg-pre">${r.probe.map(esc).join('\n')}</div>`;
+  if(r.logs.length) h += `<div class="dg-h">Jellyfin log (greške za ovu stavku)</div><div class="dg-pre">${r.logs.map(esc).join('\n')}</div>`;
+  if(r.ffmpeg.length) h += `<div class="dg-h">FFmpeg log ${esc(r.fflog||'')}</div><div class="dg-pre">${r.ffmpeg.map(esc).join('\n')}</div>`;
+  $('#dg-body').innerHTML=h;
+  $$('[data-dgfix]').forEach(b=>b.onclick=async()=>{
+    const k=b.dataset.dgfix;
+    if(k==='pathcheck'){ $('#diagdlg').close(); goTab('paths'); $('#pc-q').value=r.label.split(' · ')[0]; toast('Pokreni provjeru putanja pa označi stavku i odaberi „Ispravi u bazi”'); return; }
+    b.disabled=true;
+    try{ const x=await api('/api/diag/fix',{id:r.id, kind:k, candidate_jf:r.candidate_jf}); toast(x.msg); }catch(e){ toast(e.message,true); b.disabled=false; }
+  });
+}
 
 // ---------------- start ----------------
 pollScan();
