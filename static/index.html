@@ -236,6 +236,7 @@ header{gap:12px}
       <option value="virtual_found">Epizoda bez datoteke, a datoteka postoji</option>
       <option value="missing">Ne postoji nigdje</option>
       <option value="outside">Izvan medijskih mapa</option>
+      <option value="plugin">Plugin biblioteke (npr. Local Recommendations)</option>
     </select>
     <label>Traži <input id="pc-q" placeholder="naziv ili putanja"></label>
     <span class="sub" id="pc-sum"></span>
@@ -517,6 +518,7 @@ async function loadJf(){
   const n=[];
   if(JFD.error) n.push(`<div class="note warn">Jellyfin: ${esc(JFD.error)}</div>`);
   if(JFD.running) n.push('<div class="note">Sinkronizacija u tijeku…</div>');
+  if(JFD.plugin_skipped>0) n.push(`<div class="note">Preskočeno ${JFD.plugin_skipped.toLocaleString('hr-HR')} stavki iz plugin biblioteka (${(JFD.plugin_libs||[]).map(p=>'„'+esc(p.name)+'” · '+esc(p.plugin)).join(', ')}). To su kopije, odnosno symlinkovi postojećih filmova i serija, pa se ne prikazuju dvaput i ne prijavljuju kao greške.</div>`);
   if(JFD.missing_count>0) n.push(`<div class="note warn">${JFD.missing_count} Jellyfin stavki ne postoji na putanji koju ovaj servis vidi (npr. <code>${esc(JFD.missing_on_disk[0].path)}</code>). Ako Jellyfin i JellyClean montiraju medije na različite putanje, postavi <b>PATH_MAP</b>. Detalje i ispravak nađi u kartici <a href="#" data-tabgo="paths" style="color:var(--accent)">Provjera putanja</a>.</div>`);
   $('#jf-notes').innerHTML=n.join('');
   renderJf();
@@ -797,7 +799,7 @@ refreshCurrent = function(){ _origRefresh(); if($('#extdlg').open){ EXT_SEL.clea
 
 // ---------------- provjera putanja ----------------
 let PC=null, PC_SEL=new Set(), pcTimer=null;
-const PC_ST = {moved:['Pronađeno drugdje','warn'], virtual_found:['Bez datoteke, a postoji','warn'], missing:['Ne postoji','bad'], outside:['Izvan mapa','bad']};
+const PC_ST = {moved:['Pronađeno drugdje','warn'], virtual_found:['Bez datoteke, a postoji','warn'], missing:['Ne postoji','bad'], outside:['Izvan mapa','bad'], plugin:['Plugin biblioteka','']};
 $('#pc-run').onclick=async()=>{ try{ await api('/api/paths/check',{}); PC_SEL.clear(); toast('Provjera pokrenuta'); pollPc(); }catch(e){ toast(e.message,true); } };
 $('#pc-cancel').onclick=async()=>{ try{ await api('/api/paths/cancel',{}); $('#pc-cancel').disabled=true; pollPc(); }catch(e){ toast(e.message,true); } };
 $('#pc-filter').onchange=()=>renderPc(); $('#pc-q').oninput=()=>renderPc();
@@ -828,11 +830,14 @@ function renderPc(){
     tile('Epizode bez datoteke',c.virtual_found,'Jellyfin ih nema povezane, a datoteka postoji',c.virtual_found?'warn':''),
     tile('Ne postoji',c.missing+c.outside,`nigdje pronađeno${c.outside?` · ${c.outside} izvan mapa`:''}`,(c.missing+c.outside)?'bad':''),
     tile('Epizode koje nedostaju',c.virtual,'normalno, ako je uključen prikaz epizoda koje nedostaju',''),
+    (c.plugin?`<div class="card" style="cursor:pointer" onclick="document.querySelector('#pc-filter').value='plugin';renderPc()"><h3>Plugin biblioteke</h3><div class="big">${c.plugin.toLocaleString('hr-HR')}</div><div class="sub">nisu greške · izdvojeno, ne ispravlja se</div></div>`:''),
   ].join('');
   $('#pc-sum').textContent = `${r.total.toLocaleString('hr-HR')} stavki · ${new Date(r.time).toLocaleString('hr-HR')} · ${r.duration}s`;
-  $('#pc-prefix').innerHTML = r.prefixes.length ? `<div class="note warn"><b>Ista promjena putanje kod više stavki</b>. To obično znači promijenjen mount ili putanju biblioteke, a ne pojedinačne greške:<br>${r.prefixes.map(p=>`<code>${esc(p.from)}</code> → <code>${esc(p.to)}</code> (${p.count} stavki)`).join('<br>')}<br>Najbolje je ispraviti mount u Docker kontejneru ili putanju biblioteke u Jellyfinu. Ispravak pojedinačnih zapisa ispod je također moguć.</div>` : '';
+  const _pls=(r.plugin_libs||[]);
+  const _plNote = _pls.length ? `<div class="note"><b>Plugin biblioteke</b>: izdvojene su u zasebnu skupinu i <b>nisu greške</b>. Njihove mape su unutar Jellyfinove podatkovne mape (npr. symlinkovi koje stvara Local Recommendations), pa ih JellyClean ne vidi. Ne nude se za ispravak, jer bi ispravak na izvornu datoteku pokvario plugin.<br>${_pls.map(p=>`„${esc(p.name)}” · ${esc(p.plugin)} · ${p.items} stavki<div class="sub path">${p.locations.map(esc).join('<br>')}</div>`).join('')}</div>` : '';
+  $('#pc-prefix').innerHTML = (($('#pc-filter').value==='plugin')?_plNote:'') + (r.prefixes.length ? `<div class="note warn"><b>Ista promjena putanje kod više stavki</b>. To obično znači promijenjen mount ili putanju biblioteke, a ne pojedinačne greške:<br>${r.prefixes.map(p=>`<code>${esc(p.from)}</code> → <code>${esc(p.to)}</code> (${p.count} stavki)`).join('<br>')}<br>Najbolje je ispraviti mount u Docker kontejneru ili putanju biblioteke u Jellyfinu. Ispravak pojedinačnih zapisa ispod je također moguć.</div>` : '');
   const f=$('#pc-filter').value, q=$('#pc-q').value.toLowerCase();
-  const rows=r.items.filter(x=>(f==='all'||x.status===f) && (!q || (x.label+' '+x.jf_path+' '+(x.cand_local||'')).toLowerCase().includes(q)));
+  const rows=r.items.filter(x=>(f==='all'?x.status!=='plugin':x.status===f) && (!q || (x.label+' '+x.jf_path+' '+(x.cand_local||'')).toLowerCase().includes(q)));
   $('#pc-table tbody').innerHTML = rows.slice(0,1500).map(x=>{
     const st=PC_ST[x.status]||[x.status,''];
     const can=!!x.cand_jf;

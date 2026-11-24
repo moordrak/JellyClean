@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -660,6 +660,8 @@ class Jellyfin:
         self.error = None
         self.running = False
         self.server = None
+        self.plugin_libs = []
+        self.plugin_skipped = 0
 
     def enabled(self):
         return bool(CFG["jf_url"] and CFG["jf_key"])
@@ -695,6 +697,40 @@ class Jellyfin:
         except Exception as e:
             log("Jellyfin refresh nije uspio:", e)
 
+    def plugin_libraries(self, info=None):
+        """Biblioteke koje stvaraju pluginovi (npr. Local Recommendations, JellyNext): mape su unutar
+        Jellyfinove podatkovne mape (ProgramDataPath) ili se zovu kao poznate virtualne mape.
+        Vraća [{"name", "plugin", "locations": [jellyfin putanje]}]."""
+        try:
+            info = info or self.req("GET", "/System/Info") or {}
+        except Exception:
+            info = {}
+        roots = [p.rstrip("/") for p in (info.get("ProgramDataPath"), info.get("CachePath"),
+                                          info.get("InternalMetadataPath")) if p]
+        try:
+            libs = self.req("GET", "/Library/VirtualFolders") or []
+        except Exception:
+            libs = []
+        out = []
+        for lib in libs:
+            locs = [l.rstrip("/") for l in (lib.get("Locations") or []) if l]
+            hits = []
+            plugin = None
+            for l in locs:
+                ll = l.lower()
+                if "virtual-libraries" in ll or "localrecs" in ll or "localrecommendation" in ll:
+                    plugin = "Local Recommendations"
+                elif "jellynext" in ll:
+                    plugin = plugin or "JellyNext"
+                elif any(l == r or l.startswith(r + "/") for r in roots):
+                    plugin = plugin or "plugin (mapa unutar Jellyfin podataka)"
+                else:
+                    continue
+                hits.append(l)
+            if hits:
+                out.append({"name": lib.get("Name") or "?", "plugin": plugin, "locations": hits})
+        return out
+
     def sync(self):
         if not self.enabled():
             return
@@ -703,11 +739,18 @@ class Jellyfin:
                 return
             self.running = True
         try:
+            info = None
             try:
                 info = self.req("GET", "/System/Info")
                 self.server = {"name": info.get("ServerName"), "version": info.get("Version")}
             except Exception:
                 self.server = None
+            plibs = self.plugin_libraries(info)
+            ploc = [l for pl in plibs for l in pl["locations"]]
+
+            def in_plugin(path):
+                return bool(path) and any(path == l or path.startswith(l + "/") for l in ploc)
+            skipped = set()
             users = self.req("GET", "/Users") or []
             if CFG["jf_users"]:
                 users = [u for u in users if u.get("Name", "").lower() in CFG["jf_users"]]
@@ -726,6 +769,9 @@ class Jellyfin:
                     for it in batch:
                         iid = it["Id"]
                         t = it.get("Type")
+                        if in_plugin(it.get("Path") or ""):
+                            skipped.add(iid)
+                            continue
                         if t == "Series":
                             if it.get("Path"):
                                 series_paths[iid] = (it.get("Name"), map_jf_path(it["Path"]),
@@ -802,6 +848,8 @@ class Jellyfin:
                         cp = os.path.commonpath(eps)
                         s["path"] = cp if not os.path.isfile(cp) else os.path.dirname(cp)
             with self.lock:
+                self.plugin_libs = [dict(pl, skipped=0) for pl in plibs]
+                self.plugin_skipped = len(skipped)
                 self.items = items
                 self.series = series
                 self.users = [u["Name"] for u in users]
@@ -1434,6 +1482,15 @@ class PathCheck:
 
     def _run(self):
         t0 = time.time()
+        self.progress.update(phase="Tražim plugin biblioteke", done=0, total=0)
+        plibs = JF.plugin_libraries()
+        ploc = sorted(((l, pl) for pl in plibs for l in pl["locations"]), key=lambda x: -len(x[0]))
+
+        def plugin_of(path):
+            for l, pl in ploc:
+                if path == l or path.startswith(l + "/"):
+                    return pl
+            return None
         raw = self._fetch()
         series = {it["Id"]: it for it in raw if it.get("Type") == "Series"}
         # indeksi iz zadnjeg skeniranja diska
@@ -1466,7 +1523,9 @@ class PathCheck:
                 return k
             return sorted(cands, key=lambda c: (-score(c), c))[0]
 
-        out, counts = [], {"ok": 0, "moved": 0, "missing": 0, "virtual": 0, "virtual_found": 0, "outside": 0}
+        out, counts = [], {"ok": 0, "moved": 0, "missing": 0, "virtual": 0, "virtual_found": 0, "outside": 0,
+                           "plugin": 0}
+        plugin_count = {}
         recs = {}
         todo = sum(1 for it in raw if it.get("Type") in ("Movie", "Episode"))
         self.progress.update(phase="Uspoređujem s diskom", done=0, total=todo)
@@ -1493,6 +1552,17 @@ class PathCheck:
             rec = {"id": iid, "type": t, "label": label, "jf_path": jf_path, "local": None,
                    "status": None, "reason": "", "cand_local": None, "cand_jf": None,
                    "series_id": (it.get("SeriesId") or "").replace("-", "").lower() or None}
+            pl = plugin_of(jf_path) if jf_path else None
+            if pl:
+                # stavka iz biblioteke koju stvara plugin (npr. symlinkovi Local Recommendations):
+                # nije greška u bazi i NE smije se "ispravljati" na izvornu datoteku
+                rec.update(status="plugin", plugin=pl["plugin"], library=pl["name"],
+                           reason=f"„{pl['name']}” · {pl['plugin']} - stavke stvara plugin, ne provjeravaju se")
+                counts["plugin"] += 1
+                plugin_count[pl["name"]] = plugin_count.get(pl["name"], 0) + 1
+                recs[iid] = rec
+                out.append(rec)
+                continue
             local = map_jf_path(jf_path) if jf_path else ""
             rec["local"] = local
             if not jf_path or loc_type == "Virtual":
@@ -1565,11 +1635,13 @@ class PathCheck:
                 if key[0] != key[1]:
                     pairs[key] = pairs.get(key, 0) + 1
         prefixes = [{"from": k[0], "to": k[1], "count": v} for k, v in sorted(pairs.items(), key=lambda x: -x[1]) if v >= 3]
-        out.sort(key=lambda r: ({"moved": 0, "virtual_found": 1, "missing": 2, "outside": 3}[r["status"]], r["label"].lower()))
+        out.sort(key=lambda r: ({"moved": 0, "virtual_found": 1, "missing": 2, "outside": 3, "plugin": 9}[r["status"]],
+                                r["label"].lower()))
         with self.lock:
             self.items = recs
             self.result = {"time": now_iso(), "duration": round(time.time() - t0, 1), "total": sum(counts.values()),
                            "counts": counts, "items": out[:5000], "prefixes": prefixes[:10],
+                           "plugin_libs": [dict(pl, items=plugin_count.get(pl["name"], 0)) for pl in plibs],
                            "scan_time": SCAN.finished, "ssh": JFC.enabled()}
         log(f"Provjera putanja: {counts}")
 
@@ -1577,6 +1649,7 @@ class PathCheck:
     def _selected(self, ids, need_cand=True):
         with self.lock:
             recs = [self.items[i] for i in ids if i in self.items]
+        recs = [r for r in recs if r["status"] != "plugin"]
         if need_cand:
             recs = [r for r in recs if r["cand_jf"]]
         return recs
@@ -1822,6 +1895,7 @@ def jf_list():
         missing = [{"id": r["id"], "name": r["name"], "series": r["series"], "path": r["path"]}
                    for r in JF.items.values() if r["path"] and not r.get("on_disk")]
     return {"users": JF.users, "synced": JF.synced, "error": JF.error, "running": JF.running,
+            "plugin_libs": JF.plugin_libs, "plugin_skipped": JF.plugin_skipped,
             "movies": movies, "series": series, "orphans": orphans[:1000],
             "orphans_size": sum(o["size"] for o in orphans), "missing_on_disk": missing[:500],
             "missing_count": len(missing), "path_map": CFG["path_map"]}
