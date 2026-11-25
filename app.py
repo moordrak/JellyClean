@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -949,7 +949,7 @@ import subprocess
 HEX32 = re.compile(r"^[0-9a-f]{32}$")
 
 
-HELPER_VERSION = 4
+HELPER_VERSION = 5
 
 HELPER_BODY = r'''
 set -u
@@ -1169,6 +1169,58 @@ op_fileinfo() {
   if [ -n "$m" ]; then echo "FFLOG $(basename "$m")"; tail -30 "$m" | sed 's/^/FF /'; fi
 }
 
+# ---- test paralelnog enkodiranja (NVIDIA NVENC) u Jellyfin okruženju ----
+jf_exec_prefix() {
+  EX=""
+  case "$JCTL" in docker:*) EX="docker exec ${JCTL#docker:}" ;; esac
+}
+op_enctest() {
+  n=${1:-1}; dur=${2:-30}; mode=${3:-max}; h=${4:-1080}; p=${5:-}
+  case "$n$dur$h" in *[!0-9]*|"") echo "ERR neispravni parametri"; return ;; esac
+  [ "$n" -ge 1 ] && [ "$n" -le 32 ] || { echo "ERR broj tokova 1-32"; return; }
+  [ "$dur" -ge 5 ] && [ "$dur" -le 300 ] || { echo "ERR trajanje 5-300 s"; return; }
+  case "$h" in 1080) br=8M ;; 720) br=4M ;; 2160) br=20M ;; *) echo "ERR cilj"; return ;; esac
+  case "$p" in /*) ;; *) echo "ERR neispravna putanja"; return ;; esac
+  case "$p" in *..*) echo "ERR neispravna putanja"; return ;; esac
+  re=""; [ "$mode" = realtime ] && re="-re"
+  jf_find_ctl; jf_exec_prefix
+  echo "CTL ${JCTL:-none} ${JNAME:--}"
+  $EX nvidia-smi -L >/dev/null 2>&1 || { echo "ERR nvidia-smi nije dostupan u Jellyfin okruženju - NVIDIA kartica nije proslijeđena Jellyfinu (ili nema drivera)"; return; }
+  echo "GPU $($EX nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | head -1)"
+  $EX test -f "$p" || { echo "ERR Jellyfin ne vidi testnu datoteku: $p"; return; }
+  $EX sh -c '
+    FF=/usr/lib/jellyfin-ffmpeg/ffmpeg; [ -x "$FF" ] || FF=$(command -v ffmpeg)
+    [ -n "$FF" ] || { echo "ERR u Jellyfin okruženju nema ffmpega"; exit 0; }
+    n=$1; dur=$2; re=$3; h=$4; br=$5; p=$6
+    d=$(mktemp -d); pids=""
+    i=1
+    while [ $i -le $n ]; do
+      "$FF" -hide_banner -nostdin -y -hwaccel cuda -hwaccel_output_format cuda -t "$dur" $re -i "$p" \
+        -vf "scale_cuda=-2:$h:format=yuv420p" -c:v h264_nvenc -preset p4 -b:v "$br" -c:a aac -b:a 192k \
+        -metadata title=jellyclean-enctest -f null - 2>"$d/$i.log" &
+      pids="$pids $!"; i=$((i+1))
+    done
+    ( while :; do nvidia-smi --query-gpu=utilization.gpu,utilization.encoder,utilization.decoder,memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | sed "s/^/UTIL /"; sleep 1; done ) &
+    smp=$!
+    for x in $pids; do wait $x; done
+    kill $smp 2>/dev/null
+    i=1
+    while [ $i -le $n ]; do
+      f="$d/$i.log"
+      sp=$(grep -o "speed= *[0-9.]*x" "$f" | tail -1 | tr -dc "0-9.")
+      fps=$(grep -o "fps= *[0-9.]*" "$f" | tail -1 | tr -dc "0-9.")
+      er=$(grep -m1 -E "OpenEncodeSessionEx|incompatible client key|out of memory|No capable devices|Cannot load|Error|Invalid" "$f" | cut -c1-200)
+      if [ -z "$sp" ]; then echo "FAIL $i $(tail -3 "$f" | tr "\n" " " | cut -c1-300)"; else echo "RES $i $sp ${fps:-0} $er"; fi
+      i=$((i+1))
+    done
+    rm -rf "$d"
+  ' _ "$n" "$dur" "$re" "$h" "$br" "$p"
+}
+op_enckill() {
+  jf_find_ctl; jf_exec_prefix
+  $EX pkill -f jellyclean-enctest >/dev/null 2>&1; echo "KILLED"
+}
+
 main() {
   op=${1:-}; [ $# -gt 0 ] && shift
   case "$op" in
@@ -1181,6 +1233,8 @@ main() {
     dbcheck) op_dbcheck ;;
     dbfix) op_dbfix ;;
     fileinfo) op_fileinfo "$@" ;;
+    enctest) op_enctest "$@" ;;
+    enckill) op_enckill ;;
     *) echo "ERR nepoznata operacija '$op'"; exit 2 ;;
   esac
 }
@@ -2023,6 +2077,190 @@ def diag_fix(iid, kind, cand_jf=None):
 
 
 # --------------------------------------------------------------------------
+# Test paralelnog enkodiranja (NVIDIA NVENC u Jellyfin okruženju)
+# --------------------------------------------------------------------------
+
+class EncTestCancelled(Exception):
+    pass
+
+
+class EncTest:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.running = False
+        self.cancel_ev = threading.Event()
+        self.state = None
+        self.path = os.path.join(CFG["data_dir"], "enctest.json")
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                self.state = json.load(f)
+        except Exception:
+            self.state = None
+
+    def _save(self):
+        try:
+            os.makedirs(CFG["data_dir"], exist_ok=True)
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(self.state, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+    @staticmethod
+    def item_info(iid):
+        res = JF.req("GET", "/Items", {"Ids": iid, "Recursive": "true", "Fields": "Path,MediaStreams,MediaSources",
+                                       "EnableImages": "false"}) or {}
+        it = (res.get("Items") or [None])[0]
+        if not it:
+            raise SSHError("Stavka nije pronađena")
+        ms = (it.get("MediaSources") or [{}])[0]
+        streams = it.get("MediaStreams") or ms.get("MediaStreams") or []
+        v = next((x for x in streams if x.get("Type") == "Video"), {})
+        a = next((x for x in streams if x.get("Type") == "Audio"), {})
+        lab = it.get("Name") or "?"
+        if it.get("Type") == "Episode":
+            lab = f"{it.get('SeriesName') or '?'} S{(it.get('ParentIndexNumber') or 0):02d}E{(it.get('IndexNumber') or 0):02d} · {lab}"
+        return {"id": iid, "label": lab, "path": it.get("Path"),
+                "video": " ".join(str(x) for x in [v.get("Codec", "").upper(), f"{v.get('Width')}x{v.get('Height')}" if v.get("Width") else "",
+                                                    f"{v.get('BitDepth')}-bit" if v.get("BitDepth") else "", v.get("VideoRange") or ""] if x),
+                "audio": " ".join(str(x) for x in [a.get("Codec", "").upper(), a.get("ChannelLayout") or ""] if x),
+                "bitrate": ms.get("Bitrate"), "container": ms.get("Container")}
+
+    @staticmethod
+    def active_transcodes():
+        try:
+            ses = JF.req("GET", "/Sessions") or []
+        except Exception:
+            return None
+        out = []
+        for s in ses:
+            if s.get("NowPlayingItem") and s.get("TranscodingInfo"):
+                out.append(f"{s.get('UserName') or '?'} · {s['NowPlayingItem'].get('Name') or '?'} ({s.get('DeviceName') or s.get('Client') or ''})")
+        return out
+
+    def start(self, iid, max_n, dur, mode, target):
+        if not JFC.enabled():
+            raise SSHError("Test treba SSH pristup Jellyfin računalu (kartica Jellyfin config)")
+        if not JF.enabled():
+            raise SSHError("Test treba Jellyfin API")
+        max_n = max(1, min(int(max_n or 10), 16))
+        dur = max(10, min(int(dur or 30), 120))
+        mode = "realtime" if mode == "realtime" else "max"
+        target = target if target in ("1080", "720") else "1080"
+        info = self.item_info(iid)
+        if not info["path"]:
+            raise SSHError("Stavka nema datoteku")
+        with self.lock:
+            if self.running:
+                raise SSHError("Test je već u tijeku")
+            self.running = True
+            self.cancel_ev.clear()
+            self.state = {"status": "running", "started": now_iso(), "finished": None, "file": info,
+                          "params": {"max": max_n, "dur": dur, "mode": mode, "target": target},
+                          "gpu": None, "steps": [], "current": 0, "error": None, "conclusion": None}
+        threading.Thread(target=self._run, daemon=True).start()
+        return self.state
+
+    def cancel(self):
+        if self.running:
+            self.cancel_ev.set()
+            threading.Thread(target=lambda: JFC.run("enckill", timeout=60), daemon=True).start()
+        return {"cancelling": self.running}
+
+    def _run(self):
+        st = self.state
+        p = st["params"]
+        try:
+            for n in range(1, p["max"] + 1):
+                if self.cancel_ev.is_set():
+                    raise EncTestCancelled()
+                st["current"] = n
+                timeout = (p["dur"] * 3 if p["mode"] == "realtime" else p["dur"] * 2) + 120
+                out = JFC.run("enctest", (n, p["dur"], p["mode"], p["target"], st["file"]["path"]), timeout=timeout)
+                if self.cancel_ev.is_set():
+                    raise EncTestCancelled()
+                speeds, fails, errs, util = [], [], [], []
+                for line in out.splitlines():
+                    k, _, v = line.partition(" ")
+                    if k == "GPU" and not st["gpu"]:
+                        st["gpu"] = v.strip()
+                    elif k == "RES":
+                        q = v.split(" ", 3)
+                        try:
+                            speeds.append(float(q[1]))
+                        except (ValueError, IndexError):
+                            pass
+                        if len(q) > 3 and q[3].strip():
+                            errs.append(q[3].strip())
+                    elif k == "FAIL":
+                        fails.append(v.split(" ", 1)[1] if " " in v else v)
+                    elif k == "UTIL":
+                        try:
+                            g, e, d, m = [float(x.strip()) for x in v.split(",")[:4]]
+                            util.append((g, e, d, m))
+                        except ValueError:
+                            pass
+                sess_err = any(re.search(r"OpenEncodeSessionEx|incompatible client key|out of memory", x, re.I) for x in errs + fails)
+                step = {"n": n, "min": min(speeds) if speeds else 0.0, "avg": round(sum(speeds) / len(speeds), 2) if speeds else 0.0,
+                        "ok_streams": len(speeds), "failed": max(0, n - len(speeds)),
+                        "enc_max": max((u[1] for u in util), default=None), "dec_max": max((u[2] for u in util), default=None),
+                        "gpu_max": max((u[0] for u in util), default=None), "mem_max": max((u[3] for u in util), default=None),
+                        "enc_avg": round(sum(u[1] for u in util) / len(util)) if util else None,
+                        "session_limit": sess_err, "errors": (errs + fails)[:3]}
+                st["steps"].append(step)
+                self._save()
+                thr = 0.97 if p["mode"] == "realtime" else 1.0
+                if sess_err or step["failed"] or step["min"] < thr:
+                    break
+            st["status"] = "done"
+        except EncTestCancelled:
+            st["status"] = "cancelled"
+        except Exception as e:
+            st["status"] = "error"
+            st["error"] = str(e)
+            log("Test enkodiranja:", e)
+        finally:
+            st["finished"] = now_iso()
+            st["conclusion"] = self._conclude(st)
+            self.running = False
+            self._save()
+
+    @staticmethod
+    def _conclude(st):
+        steps, p = st["steps"], st["params"]
+        if not steps:
+            return None
+        rt = p["mode"] == "realtime"
+        thr = 0.97 if rt else 1.0
+        good = [s for s in steps if not s["session_limit"] and not s["failed"] and s["min"] >= thr]
+        capable = max((s["n"] for s in good), default=0)
+        if rt:
+            rec = max((s["n"] for s in good if (s["enc_max"] or 0) <= 85 and (s["dec_max"] or 0) <= 85), default=0)
+        else:
+            rec = max((s["n"] for s in good if s["min"] >= 1.2), default=0)
+        last = steps[-1]
+        if last["session_limit"]:
+            reason = f"ograničenje broja sesija u NVIDIA driveru (kod {last['n']} istovremenih tokova)"
+        elif last["failed"]:
+            reason = f"ffmpeg nije uspio pokrenuti sve tokove kod {last['n']} istovremenih"
+        elif last["min"] < thr:
+            reason = (f"snaga kartice: kod {last['n']} tokova najsporiji ide {last['min']}x"
+                      + (f" (ENC {last['enc_max']:.0f}%, DEC {last['dec_max']:.0f}%)" if last['enc_max'] is not None else ""))
+        elif st["status"] == "cancelled":
+            reason = "test je prekinut"
+        else:
+            reason = f"dosegnut zadani najveći broj tokova ({p['max']}) - kartica može i više"
+        return {"capable": capable, "recommended": rec, "reason": reason,
+                "more_possible": st["status"] == "done" and capable == p["max"]}
+
+    def get(self):
+        return {"running": self.running, "state": self.state, "ssh": JFC.enabled(), "jellyfin": JF.enabled(),
+                "active": self.active_transcodes() if JF.enabled() else None}
+
+
+ENC = EncTest()
+
+
+# --------------------------------------------------------------------------
 # Pozadinski poslovi
 # --------------------------------------------------------------------------
 
@@ -2302,6 +2540,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"items": diag_search(q.get("q", "")[:100])})
             if u.path == "/api/diag/episodes":
                 return self._send(200, {"items": diag_episodes(re.sub(r"[^0-9a-fA-F-]", "", q.get("series", "")))})
+            if u.path == "/api/enctest":
+                return self._send(200, ENC.get())
+            if u.path == "/api/enctest/item":
+                return self._send(200, EncTest.item_info(re.sub(r"[^0-9a-fA-F]", "", q.get("id", ""))))
             if u.path == "/api/jellyfin/tasks":
                 if not JF.enabled():
                     return self._send(400, {"error": "Jellyfin nije podešen"})
@@ -2361,6 +2603,11 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/diag/fix":
                 return self._send(200, diag_fix((body.get("id") or "").replace("-", "").lower(), body.get("kind"),
                                                 body.get("candidate_jf")))
+            if u.path == "/api/enctest/start":
+                return self._send(200, ENC.start((body.get("id") or "").replace("-", "").lower(), body.get("max"),
+                                                 body.get("dur"), body.get("mode"), str(body.get("target") or "1080")))
+            if u.path == "/api/enctest/cancel":
+                return self._send(200, ENC.cancel())
             if u.path == "/api/paths/cancel":
                 return self._send(200, PC.cancel())
             if u.path == "/api/paths/notify":

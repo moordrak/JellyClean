@@ -29,6 +29,12 @@ Web servis za pregled i čišćenje prostora na Jellyfin poslužitelju. Nema van
   - datoteka na NAS-u i traženje datoteke drugdje
   - preko SSH-a: vidi li datoteku i može li je čitati **sam Jellyfin kontejner**, `ffprobe` provjera sadržaja te greške za tu stavku iz Jellyfin i FFmpeg logova
   - jasan zaključak (zapis bez datoteke, kriva putanja, mount, dozvole, oštećena datoteka, neuspjelo transkodiranje, problem do klijenta) i popravak jednim klikom (osvježi stavku ili javi Jellyfinu datoteku)
+- **Test paralelnog enkodiranja**: koliko istovremenih transkodiranja NVIDIA kartica u Jellyfinu može odraditi.
+  - testnu datoteku biraš iz biblioteke, a test se preko SSH-a izvodi **u Jellyfin kontejneru** s Jellyfinovim ffmpegom (NVDEC → `scale_cuda` → `h264_nvenc`)
+  - broj istovremenih tokova raste korak po korak, uz praćenje brzine svakog toka te opterećenja ENC, DEC, GPU i VRAM
+  - dva načina: *maksimalna brzina* (granica kartice i drivera) i *stvarno vrijeme* (opterećenje kao kod gledanja)
+  - rezultat: koliko tokova kartica stiže, preporučeni broj s rezervom i što ju je ograničilo (ograničenje sesija drivera ili snaga)
+  - upozorava ako netko upravo gleda s transkodiranjem; test se može prekinuti
 - **Smeće i duplikati**: sample videi, nedovršena preuzimanja (`.part`, `.!qB`), `.exe` i `.url` datoteke iz releasea, rar arhive, prazne datoteke i mape, više verzija istog filma ili epizode.
 - **Kanta**: obrisane stavke se premještaju u `.jellyclean-trash` unutar iste mape, što je trenutno jer se ništa ne kopira. Iz kante se mogu vratiti, a automatski se prazni nakon `TRASH_DAYS` dana.
 - **Hardlinkovi**: servis označava datoteke koje imaju još jednu kopiju (tipično *arr + qBittorrent) i upozorava da njihovo brisanje ne oslobađa prostor dok se ne obriše i torrent.

@@ -164,6 +164,7 @@ header{gap:12px}
     <button data-tab="paths">Provjera putanja</button>
     <button data-tab="junk">Smeće i duplikati</button>
     <button data-tab="jfconfig">Jellyfin config</button>
+    <button data-tab="enctest" title="Test paralelnog enkodiranja">Test enkodiranja</button>
     <button data-tab="trash">Kanta</button>
   </nav>
   <div class="spacer"></div>
@@ -305,6 +306,37 @@ header{gap:12px}
   </div>
 </section>
 
+<!-- TEST PARALELNOG ENKODIRANJA -->
+<section class="tab" id="tab-enctest">
+  <div class="tab-head"><h2>Test paralelnog enkodiranja</h2><p>Koliko istovremenih transkodiranja NVIDIA kartica u Jellyfinu može odraditi</p></div>
+  <div id="et-notes"></div>
+  <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(420px,1fr));margin-bottom:16px">
+    <div class="card">
+      <h3>1 · Testna datoteka</h3>
+      <input id="et-q" placeholder="naziv filma ili serije (uzmi ono što se najčešće transkodira)" style="width:100%;background:rgba(30,34,43,.85);border:1px solid var(--line);color:var(--text);padding:7px 10px;border-radius:7px;font:inherit">
+      <div id="et-res" style="margin-top:6px;max-height:220px;overflow:auto"></div>
+      <div id="et-file" style="margin-top:10px"></div>
+    </div>
+    <div class="card">
+      <h3>2 · Postavke</h3>
+      <div class="toolbar" style="margin:0 0 10px">
+        <label>Najviše tokova <input type="number" id="et-max" value="10" min="1" max="16" style="width:70px"></label>
+        <label>Trajanje koraka <select id="et-dur"><option value="20">20 s</option><option value="30" selected>30 s</option><option value="60">60 s</option></select></label>
+        <label>Cilj <select id="et-target"><option value="1080">1080p · 8 Mbps</option><option value="720">720p · 4 Mbps</option></select></label>
+      </div>
+      <div class="toolbar" style="margin:0 0 10px">
+        <label style="display:flex;gap:6px"><input type="radio" name="et-mode" value="max" checked> Maksimalna brzina</label>
+        <label style="display:flex;gap:6px"><input type="radio" name="et-mode" value="realtime"> Stvarno vrijeme (kao gledanje)</label>
+      </div>
+      <p class="sub" style="margin:0 0 12px"><b>Maksimalna brzina</b>: svaki tok kodira što brže može, pa je ENC već kod 1–2 toka na 100%. Važno je da i najsporiji tok ide ≥ 1.0x. Brže je i pokazuje granicu kartice i drivera.<br><b>Stvarno vrijeme</b>: tokovi idu brzinom reprodukcije, pa se vidi stvarno opterećenje ENC i DEC po gledatelju. Traje dulje.</p>
+      <div class="toolbar" style="margin:0"><button class="btn primary" id="et-start">Pokreni test</button><button class="btn danger" id="et-cancel" style="display:none">Prekini</button><span class="sub" id="et-eta"></span></div>
+    </div>
+  </div>
+  <div id="et-progress"></div>
+  <div id="et-result"></div>
+  <div class="card" style="padding:0;margin-top:14px" id="et-tablecard"><table id="et-table"><thead><tr><th class="num">Tokova</th><th>Najsporiji tok</th><th class="num">Prosjek</th><th class="num">ENC max</th><th class="num">DEC max</th><th class="num">GPU max</th><th class="num">VRAM</th><th>Stanje</th></tr></thead><tbody></tbody></table></div>
+</section>
+
 <!-- KANTA -->
 <section class="tab" id="tab-trash">
   <div class="tab-head"><h2>Kanta</h2><p>Obrisane stavke - vraćanje ili trajno brisanje</p></div>
@@ -427,7 +459,7 @@ $$('#nav button').forEach(b=>b.onclick=()=>{
   current=b.dataset.tab; clearSel(); refreshCurrent();
 });
 function refreshCurrent(){
-  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash, jfconfig:()=>loadJc(false), paths:loadPc}[current]||(()=>{}))();
+  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash, jfconfig:()=>loadJc(false), paths:loadPc, enctest:loadEt}[current]||(()=>{}))();
 }
 
 // ---------------- pregled ----------------
@@ -950,6 +982,73 @@ async function runDiag(id){
     b.disabled=true;
     try{ const x=await api('/api/diag/fix',{id:r.id, kind:k, candidate_jf:r.candidate_jf}); toast(x.msg); }catch(e){ toast(e.message,true); b.disabled=false; }
   });
+}
+
+
+// ---------------- test paralelnog enkodiranja ----------------
+let ET=null, ET_FILE=null, etTimer=null, etQTimer=null;
+async function loadEt(){ try{ ET=await api('/api/enctest'); }catch(e){ return toast(e.message,true); } renderEt(); if(ET.running){ clearTimeout(etTimer); etTimer=setTimeout(loadEt,2000); } }
+$('#et-q').oninput=()=>{ clearTimeout(etQTimer); etQTimer=setTimeout(etSearch,350); };
+async function etSearch(){
+  const q=$('#et-q').value.trim(); if(q.length<2){ $('#et-res').innerHTML=''; return; }
+  let r; try{ r=await api('/api/diag/search?q='+encodeURIComponent(q)); }catch(e){ $('#et-res').innerHTML=`<div class="sub">${esc(e.message)}</div>`; return; }
+  $('#et-res').innerHTML = r.items.map(x=>`<div class="dg-item" data-et${x.type==='Series'?'series':'pick'}="${x.id}"><span class="pill">${x.type==='Series'?'serija':x.type==='Movie'?'film':'epizoda'}</span>${esc(x.label)}</div>`).join('') || '<div class="sub">Nema rezultata</div>';
+}
+document.addEventListener('click', async e=>{
+  const s=e.target.closest('[data-etseries]');
+  if(s){ let r; try{ r=await api('/api/diag/episodes?series='+s.dataset.etseries); }catch(err){ return toast(err.message,true); }
+    $('#et-res').innerHTML = r.items.filter(x=>!x.virtual).slice(0,60).map(x=>`<div class="dg-item" data-etpick="${x.id}">${esc(x.label)}</div>`).join(''); return; }
+  const p=e.target.closest('[data-etpick]');
+  if(p){ try{ ET_FILE=await api('/api/enctest/item?id='+p.dataset.etpick); }catch(err){ return toast(err.message,true); } $('#et-res').innerHTML=''; renderEtFile(); }
+});
+function renderEtFile(){
+  const f=ET_FILE; if(!f){ $('#et-file').innerHTML=''; return; }
+  $('#et-file').innerHTML=`<div class="note" style="margin:0"><b>${esc(f.label)}</b><br>video: ${esc(f.video||'?')} · zvuk: ${esc(f.audio||'?')}${f.bitrate?` · ${(f.bitrate/1e6).toFixed(1)} Mbps`:''}${f.container?` · ${esc(f.container)}`:''}<div class="sub path">${esc(f.path||'')}</div></div>`;
+}
+function etParams(){ return {max:Number($('#et-max').value||10), dur:Number($('#et-dur').value), target:$('#et-target').value, mode:(document.querySelector('input[name=et-mode]:checked')||{}).value||'max'}; }
+function updEta(){ const p=etParams(); const per=p.mode==='realtime'?p.dur+8:Math.ceil(p.dur/2)+8; $('#et-eta').textContent=`najviše oko ${Math.ceil(per*p.max/60)} min (test staje čim kartica posustane)`; }
+['#et-max','#et-dur','#et-target'].forEach(x=>$(x).oninput=updEta); document.querySelectorAll('input[name=et-mode]').forEach(r=>r.onchange=updEta);
+$('#et-start').onclick=async()=>{
+  if(!ET_FILE) return toast('Prvo odaberi testnu datoteku',true);
+  if(ET && ET.active && ET.active.length && !confirm(`Upravo se transkodira:\n${ET.active.join('\n')}\n\nTest opterećuje karticu i gledateljima može uzrokovati zastoje. Pokrenuti svejedno?`)) return;
+  try{ await api('/api/enctest/start',{id:ET_FILE.id, ...etParams()}); toast('Test pokrenut'); loadEt(); }catch(e){ toast(e.message,true); }
+};
+$('#et-cancel').onclick=async()=>{ try{ await api('/api/enctest/cancel',{}); $('#et-cancel').disabled=true; toast('Prekidam test…'); }catch(e){ toast(e.message,true); } };
+function renderEt(){
+  if(!ET) return;
+  const n=[];
+  if(!ET.jellyfin) n.push('<div class="note warn">Za test treba Jellyfin API (JELLYFIN_URL, JELLYFIN_API_KEY).</div>');
+  if(!ET.ssh) n.push('<div class="note warn">Za test treba SSH pristup računalu na kojem radi Jellyfin (postavlja ga LXC skripta, vidi karticu Jellyfin config). Test se izvodi u Jellyfin kontejneru, s Jellyfinovim ffmpegom i NVIDIA karticom.</div>');
+  if(ET.active && ET.active.length) n.push(`<div class="note warn"><b>Upravo se transkodira:</b><br>${ET.active.map(esc).join('<br>')}<br>Rezultat testa bit će manji, a gledatelji mogu osjetiti zastoje.</div>`);
+  $('#et-notes').innerHTML=n.join('');
+  $('#et-start').disabled = ET.running || !ET.ssh || !ET.jellyfin;
+  $('#et-cancel').style.display = ET.running?'':'none'; if(!ET.running) $('#et-cancel').disabled=false;
+  const st=ET.state;
+  if(!st){ $('#et-progress').innerHTML=''; $('#et-result').innerHTML=''; $('#et-tablecard').style.display='none'; updEta(); return; }
+  if(!ET_FILE && st.file){ ET_FILE=st.file; renderEtFile(); }
+  const p=st.params, rt=p.mode==='realtime', thr=rt?0.97:1.0;
+  $('#et-progress').innerHTML = ET.running ? `<div class="note"><b>Test u tijeku: ${st.current} ${st.current===1?'tok':'istovremenih tokova'}</b> (${rt?'stvarno vrijeme':'maksimalna brzina'}, ${p.target}p, ${p.dur} s po koraku)${st.gpu?` · ${esc(st.gpu)}`:''}
+      <div class="bar" style="margin-top:8px"><i style="width:${Math.round((st.current-1)/p.max*100)}%"></i></div></div>` : '';
+  $('#et-tablecard').style.display = st.steps.length?'':'none';
+  const pill=(s)=> s.session_limit?'<span class="pill bad">ograničenje drivera</span>': s.failed?`<span class="pill bad">${s.failed} tok(a) nije krenulo</span>`: s.min<thr?'<span class="pill bad">ne stiže</span>': (!rt && s.min<1.2) || (rt && ((s.enc_max||0)>85 || (s.dec_max||0)>85)) ? '<span class="pill warn">na granici</span>':'<span class="pill ok">stiže</span>';
+  const maxSp=Math.max(1.5,...st.steps.map(s=>s.min));
+  $('#et-table tbody').innerHTML = st.steps.map(s=>`<tr><td class="num"><b>${s.n}</b></td>
+     <td><div class="sizebar" style="min-width:220px"><div class="bar" style="position:relative"><i style="width:${Math.min(100,s.min/maxSp*100)}%;background:${s.min<thr?'var(--bad)':s.min<1.2&&!rt?'var(--warn)':'var(--ok)'}"></i><span style="position:absolute;top:-3px;bottom:-3px;left:${thr/maxSp*100}%;border-left:2px dashed var(--muted)"></span></div><b>${s.min.toFixed(2)}x</b></div></td>
+     <td class="num">${s.avg.toFixed(2)}x</td><td class="num">${s.enc_max!=null?Math.round(s.enc_max)+'%':'–'}</td><td class="num">${s.dec_max!=null?Math.round(s.dec_max)+'%':'–'}</td><td class="num">${s.gpu_max!=null?Math.round(s.gpu_max)+'%':'–'}</td><td class="num">${s.mem_max!=null?Math.round(s.mem_max)+' MB':'–'}</td>
+     <td>${pill(s)}${s.errors&&s.errors.length?`<div class="sub path" style="max-width:300px">${esc(s.errors[0])}</div>`:''}</td></tr>`).join('');
+  let res='';
+  if(st.status==='error') res=`<div class="dg-concl bad">Test nije uspio: ${esc(st.error||'')}</div>`;
+  const c=st.conclusion;
+  if(c && !ET.running){
+    res += `<div class="grid" style="margin-top:4px">
+      <div class="card"><h3>Kartica može</h3><div class="big" style="color:var(--ok)">${c.capable}${c.more_possible?'+':''}</div><div class="sub">istovremenih transkodiranja (${p.target}p, ${rt?'u stvarnom vremenu':'najsporiji tok ≥ 1.0x'})</div></div>
+      <div class="card"><h3>Preporuka</h3><div class="big">${c.recommended}</div><div class="sub">${rt?'uz ENC/DEC ≤ 85%':'uz rezervu, najsporiji tok ≥ 1.2x'} - za premotavanje, titlove i nagle početke</div></div>
+      <div class="card"><h3>Ograničenje</h3><div class="sub" style="font-size:13.5px;color:var(--text)">${esc(c.reason)}</div>${st.gpu?`<div class="sub" style="margin-top:6px">${esc(st.gpu)}</div>`:''}</div></div>
+      <div class="note" style="margin-top:12px">Datoteka: ${esc(st.file.label)} · ${esc(st.file.video||'')} · ${new Date(st.finished||st.started).toLocaleString('hr-HR')}${st.status==='cancelled'?' · <b>test je prekinut</b>':''}<br>
+      Savjet: u Jellyfinu uključi <i>Prigušivanje transkodiranja</i> (Nadzorna ploča → Reprodukcija → Transkodiranje), da kartica ne kodira unaprijed punom brzinom. Za 4K/HDR izvore ponovi test s takvom datotekom.</div>`;
+  }
+  $('#et-result').innerHTML=res;
+  updEta();
 }
 
 // ---------------- start ----------------
