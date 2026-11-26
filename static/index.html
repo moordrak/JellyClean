@@ -363,8 +363,11 @@ header{gap:12px}
       <div class="toolbar" style="margin:0 0 10px">
         <label>Najviše tokova <input type="number" id="et-max" value="10" min="1" max="16" style="width:70px"></label>
         <label>Trajanje koraka <select id="et-dur"><option value="20">20 s</option><option value="30" selected>30 s</option><option value="60">60 s</option></select></label>
-        <label>Cilj <select id="et-target"><option value="1080">1080p · 8 Mbps</option><option value="720">720p · 4 Mbps</option></select></label>
+        <label>Cilj <select id="et-target"><option value="2160">4K · 2160p</option><option value="1440">1440p</option><option value="1080" selected>1080p</option><option value="720">720p</option><option value="480">480p</option></select></label>
+        <label>Kodek <select id="et-codec"><option value="h264" selected>H.264</option><option value="hevc">HEVC (H.265)</option></select></label>
+        <span class="sub" id="et-br"></span>
       </div>
+      <div class="note warn" id="et-tgtwarn" style="display:none;margin:0 0 10px"></div>
       <div class="toolbar" style="margin:0 0 10px">
         <label style="display:flex;gap:6px"><input type="radio" name="et-mode" value="max" checked> Maksimalna brzina</label>
         <label style="display:flex;gap:6px"><input type="radio" name="et-mode" value="realtime"> Stvarno vrijeme (kao gledanje)</label>
@@ -1192,11 +1195,21 @@ document.addEventListener('click', async e=>{
 });
 function renderEtFile(){
   const f=ET_FILE; if(!f){ $('#et-file').innerHTML=''; return; }
+  setTimeout(updTgt,0);
   $('#et-file').innerHTML=`<div class="note" style="margin:0"><b>${esc(f.label)}</b><br>video: ${esc(f.video||'?')} · zvuk: ${esc(f.audio||'?')}${f.bitrate?` · ${(f.bitrate/1e6).toFixed(1)} Mbps`:''}${f.container?` · ${esc(f.container)}`:''}<div class="sub path">${esc(f.path||'')}</div></div>`;
 }
-function etParams(){ return {max:Number($('#et-max').value||10), dur:Number($('#et-dur').value), target:$('#et-target').value, mode:(document.querySelector('input[name=et-mode]:checked')||{}).value||'max'}; }
+const ET_BR={h264:{2160:'25 Mbps',1440:'14 Mbps',1080:'8 Mbps',720:'4 Mbps',480:'1,5 Mbps'}, hevc:{2160:'15 Mbps',1440:'9 Mbps',1080:'5 Mbps',720:'2,5 Mbps',480:'1 Mbps'}};
+const etTgt=p=>(p.target==='2160'?'4K':p.target+'p')+' '+((p.codec||'h264')==='hevc'?'HEVC':'H.264');
+function etParams(){ return {max:Number($('#et-max').value||10), dur:Number($('#et-dur').value), target:$('#et-target').value, codec:$('#et-codec').value, mode:(document.querySelector('input[name=et-mode]:checked')||{}).value||'max'}; }
+function updTgt(){
+  const p=etParams(); $('#et-br').textContent='bitrate '+ET_BR[p.codec][p.target];
+  const h=ET_FILE&&ET_FILE.height, w=$('#et-tgtwarn');
+  const msg = h && Number(p.target)>h*1.1 ? `Izvor je ${h}p - Jellyfin ne povećava rezoluciju. Za cilj ${p.target==='2160'?'4K':p.target+'p'} odaberi datoteku te ili veće rezolucije.`
+    : (p.target==='2160' ? '4K transkodiranje: GTX 1060 i slične kartice podnose tek 1–3 takva toka; test traje dulje.' : '');
+  if(w){ w.textContent=msg; w.style.display=msg?'':'none'; }
+}
 function updEta(){ const p=etParams(); const per=p.mode==='realtime'?p.dur+8:Math.ceil(p.dur/2)+8; $('#et-eta').textContent=`najviše oko ${Math.ceil(per*p.max/60)} min (test staje čim kartica posustane)`; }
-['#et-max','#et-dur','#et-target'].forEach(x=>$(x).oninput=updEta); document.querySelectorAll('input[name=et-mode]').forEach(r=>r.onchange=updEta);
+['#et-max','#et-dur','#et-target','#et-codec'].forEach(x=>$(x).oninput=()=>{ updEta(); updTgt(); }); updTgt(); document.querySelectorAll('input[name=et-mode]').forEach(r=>r.onchange=updEta);
 $('#et-start').onclick=async()=>{
   if(!ET_FILE) return toast('Prvo odaberi testnu datoteku',true);
   if(ET && ET.active && ET.active.length && !confirm(`Upravo se transkodira:\n${ET.active.join('\n')}\n\nTest opterećuje karticu i gledateljima može uzrokovati zastoje. Pokrenuti svejedno?`)) return;
@@ -1216,7 +1229,7 @@ function renderEt(){
   if(!st){ $('#et-progress').innerHTML=''; $('#et-result').innerHTML=''; $('#et-tablecard').style.display='none'; updEta(); return; }
   if(!ET_FILE && st.file){ ET_FILE=st.file; renderEtFile(); }
   const p=st.params, rt=p.mode==='realtime', thr=rt?0.97:1.0;
-  $('#et-progress').innerHTML = ET.running ? `<div class="note"><b>Test u tijeku: ${st.current} ${st.current===1?'tok':'istovremenih tokova'}</b> (${rt?'stvarno vrijeme':'maksimalna brzina'}, ${p.target}p, ${p.dur} s po koraku)${st.gpu?` · ${esc(st.gpu)}`:''}
+  $('#et-progress').innerHTML = ET.running ? `<div class="note"><b>Test u tijeku: ${st.current} ${st.current===1?'tok':'istovremenih tokova'}</b> (${rt?'stvarno vrijeme':'maksimalna brzina'}, ${etTgt(p)}, ${p.dur} s po koraku)${st.gpu?` · ${esc(st.gpu)}`:''}
       <div class="bar" style="margin-top:8px"><i style="width:${Math.round((st.current-1)/p.max*100)}%"></i></div></div>` : '';
   $('#et-tablecard').style.display = st.steps.length?'':'none';
   const pill=(s)=> s.session_limit?'<span class="pill bad">ograničenje drivera</span>': s.failed?`<span class="pill bad">${s.failed} tok(a) nije krenulo</span>`: s.min<thr?'<span class="pill bad">ne stiže</span>': (!rt && s.min<1.2) || (rt && ((s.enc_max||0)>85 || (s.dec_max||0)>85)) ? '<span class="pill warn">na granici</span>':'<span class="pill ok">stiže</span>';
@@ -1230,7 +1243,7 @@ function renderEt(){
   const c=st.conclusion;
   if(c && !ET.running){
     res += `<div class="grid" style="margin-top:4px">
-      <div class="card"><h3>Kartica može</h3><div class="big" style="color:var(--ok)">${c.capable}${c.more_possible?'+':''}</div><div class="sub">istovremenih transkodiranja (${p.target}p, ${rt?'u stvarnom vremenu':'najsporiji tok ≥ 1.0x'})</div></div>
+      <div class="card"><h3>Kartica može</h3><div class="big" style="color:var(--ok)">${c.capable}${c.more_possible?'+':''}</div><div class="sub">istovremenih transkodiranja (${etTgt(p)}, ${rt?'u stvarnom vremenu':'najsporiji tok ≥ 1.0x'})</div></div>
       <div class="card"><h3>Preporuka</h3><div class="big">${c.recommended}</div><div class="sub">${rt?'uz ENC/DEC ≤ 85%':'uz rezervu, najsporiji tok ≥ 1.2x'} - za premotavanje, titlove i nagle početke</div></div>
       <div class="card"><h3>Ograničenje</h3><div class="sub" style="font-size:13.5px;color:var(--text)">${esc(c.reason)}</div>${st.gpu?`<div class="sub" style="margin-top:6px">${esc(st.gpu)}</div>`:''}</div></div>
       <div class="note" style="margin-top:12px">Datoteka: ${esc(st.file.label)} · ${esc(st.file.video||'')} · ${new Date(st.finished||st.started).toLocaleString('hr-HR')}${st.status==='cancelled'?' · <b>test je prekinut</b>':''}<br>

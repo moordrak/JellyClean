@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "1.7.1"
+APP_VERSION = "1.8.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -949,7 +949,7 @@ import subprocess
 HEX32 = re.compile(r"^[0-9a-f]{32}$")
 
 
-HELPER_VERSION = 8
+HELPER_VERSION = 9
 
 # NVENC patch: keylase/nvidia-patch, zakucana provjerena verzija. Skripta se ne sprema u ovaj
 # repozitorij (nema licence za redistribuciju) - preuzima se s GitHuba i provjerava sha256 ovdje
@@ -1184,11 +1184,17 @@ jf_exec_prefix() {
   case "$JCTL" in docker:*) EX="docker exec ${JCTL#docker:}" ;; esac
 }
 op_enctest() {
-  n=${1:-1}; dur=${2:-30}; mode=${3:-max}; h=${4:-1080}; p=${5:-}
+  n=${1:-1}; dur=${2:-30}; mode=${3:-max}; h=${4:-1080}; p=${5:-}; codec=${6:-h264}
   case "$n$dur$h" in *[!0-9]*|"") echo "ERR neispravni parametri"; return ;; esac
   [ "$n" -ge 1 ] && [ "$n" -le 32 ] || { echo "ERR broj tokova 1-32"; return; }
   [ "$dur" -ge 5 ] && [ "$dur" -le 300 ] || { echo "ERR trajanje 5-300 s"; return; }
-  case "$h" in 1080) br=8M ;; 720) br=4M ;; 2160) br=20M ;; *) echo "ERR cilj"; return ;; esac
+  case "$codec" in
+    h264) enc=h264_nvenc
+      case "$h" in 2160) br=25M ;; 1440) br=14M ;; 1080) br=8M ;; 720) br=4M ;; 480) br=1500k ;; *) echo "ERR cilj"; return ;; esac ;;
+    hevc) enc=hevc_nvenc
+      case "$h" in 2160) br=15M ;; 1440) br=9M ;; 1080) br=5M ;; 720) br=2500k ;; 480) br=1M ;; *) echo "ERR cilj"; return ;; esac ;;
+    *) echo "ERR kodek"; return ;;
+  esac
   case "$p" in /*) ;; *) echo "ERR neispravna putanja"; return ;; esac
   case "$p" in *..*) echo "ERR neispravna putanja"; return ;; esac
   re=""; [ "$mode" = realtime ] && re="-re"
@@ -1196,16 +1202,17 @@ op_enctest() {
   echo "CTL ${JCTL:-none} ${JNAME:--}"
   $EX nvidia-smi -L >/dev/null 2>&1 || { echo "ERR nvidia-smi nije dostupan u Jellyfin okruženju - NVIDIA kartica nije proslijeđena Jellyfinu (ili nema drivera)"; return; }
   echo "GPU $($EX nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | head -1)"
+  echo "ENC $enc $br"
   $EX test -f "$p" || { echo "ERR Jellyfin ne vidi testnu datoteku: $p"; return; }
   $EX sh -c '
     FF=/usr/lib/jellyfin-ffmpeg/ffmpeg; [ -x "$FF" ] || FF=$(command -v ffmpeg)
     [ -n "$FF" ] || { echo "ERR u Jellyfin okruženju nema ffmpega"; exit 0; }
-    n=$1; dur=$2; re=$3; h=$4; br=$5; p=$6
+    n=$1; dur=$2; re=$3; h=$4; br=$5; p=$6; enc=$7
     d=$(mktemp -d); pids=""
     i=1
     while [ $i -le $n ]; do
       "$FF" -hide_banner -nostdin -y -hwaccel cuda -hwaccel_output_format cuda -t "$dur" $re -i "$p" \
-        -vf "scale_cuda=-2:$h:format=yuv420p" -c:v h264_nvenc -preset p4 -b:v "$br" -c:a aac -b:a 192k \
+        -vf "scale_cuda=-2:$h:format=yuv420p" -c:v "$enc" -preset p4 -b:v "$br" -c:a aac -b:a 192k \
         -metadata title=jellyclean-enctest -f null - 2>"$d/$i.log" &
       pids="$pids $!"; i=$((i+1))
     done
@@ -1223,7 +1230,7 @@ op_enctest() {
       i=$((i+1))
     done
     rm -rf "$d"
-  ' _ "$n" "$dur" "$re" "$h" "$br" "$p"
+  ' _ "$n" "$dur" "$re" "$h" "$br" "$p" "$enc"
 }
 op_enckill() {
   jf_find_ctl; jf_exec_prefix
@@ -2308,7 +2315,8 @@ class EncTest:
                 "video": " ".join(str(x) for x in [v.get("Codec", "").upper(), f"{v.get('Width')}x{v.get('Height')}" if v.get("Width") else "",
                                                     f"{v.get('BitDepth')}-bit" if v.get("BitDepth") else "", v.get("VideoRange") or ""] if x),
                 "audio": " ".join(str(x) for x in [a.get("Codec", "").upper(), a.get("ChannelLayout") or ""] if x),
-                "bitrate": ms.get("Bitrate"), "container": ms.get("Container")}
+                "bitrate": ms.get("Bitrate"), "container": ms.get("Container"),
+                "width": v.get("Width"), "height": v.get("Height")}
 
     @staticmethod
     def active_transcodes():
@@ -2322,7 +2330,9 @@ class EncTest:
                 out.append(f"{s.get('UserName') or '?'} · {s['NowPlayingItem'].get('Name') or '?'} ({s.get('DeviceName') or s.get('Client') or ''})")
         return out
 
-    def start(self, iid, max_n, dur, mode, target):
+    TARGETS = ("2160", "1440", "1080", "720", "480")
+
+    def start(self, iid, max_n, dur, mode, target, codec="h264"):
         if not JFC.enabled():
             raise SSHError("Test treba SSH pristup Jellyfin računalu (kartica Jellyfin config)")
         if not JF.enabled():
@@ -2330,17 +2340,22 @@ class EncTest:
         max_n = max(1, min(int(max_n or 10), 16))
         dur = max(10, min(int(dur or 30), 120))
         mode = "realtime" if mode == "realtime" else "max"
-        target = target if target in ("1080", "720") else "1080"
+        target = target if target in self.TARGETS else "1080"
+        codec = codec if codec in ("h264", "hevc") else "h264"
         info = self.item_info(iid)
         if not info["path"]:
             raise SSHError("Stavka nema datoteku")
+        sh = info.get("height") or 0
+        if sh and int(target) > sh * 1.1:
+            raise SSHError(f"Izvor je {sh}p, a cilj {target}p. Jellyfin ne povećava rezoluciju - za ovaj cilj "
+                           f"odaberi datoteku od barem {target}p (npr. 4K film za cilj 2160p).")
         with self.lock:
             if self.running:
                 raise SSHError("Test je već u tijeku")
             self.running = True
             self.cancel_ev.clear()
             self.state = {"status": "running", "started": now_iso(), "finished": None, "file": info,
-                          "params": {"max": max_n, "dur": dur, "mode": mode, "target": target},
+                          "params": {"max": max_n, "dur": dur, "mode": mode, "target": target, "codec": codec},
                           "gpu": None, "steps": [], "current": 0, "error": None, "conclusion": None}
         threading.Thread(target=self._run, daemon=True).start()
         return self.state
@@ -2360,7 +2375,19 @@ class EncTest:
                     raise EncTestCancelled()
                 st["current"] = n
                 timeout = (p["dur"] * 3 if p["mode"] == "realtime" else p["dur"] * 2) + 120
-                out = JFC.run("enctest", (n, p["dur"], p["mode"], p["target"], st["file"]["path"]), timeout=timeout)
+                timeout += 120 if p["target"] == "2160" else 0
+                try:
+                    out = JFC.run("enctest", (n, p["dur"], p["mode"], p["target"], st["file"]["path"],
+                                              p.get("codec", "h264")), timeout=timeout)
+                except SSHError as e:
+                    if str(e) in ("cilj", "kodek") or "nepoznata operacija" in str(e):
+                        raise SSHError("Pomoćni program na Jellyfin računalu je stariji od verzije " + str(HELPER_VERSION) +
+                                       " i ne zna za ovaj cilj. Na Proxmox hostu pokreni update-lxc.sh "
+                                       "(jednom traži sudo lozinku).")
+                    raise
+                if p.get("codec", "h264") != "h264" and not re.search(r"^ENC ", out, re.M):
+                    raise SSHError("Pomoćni program na Jellyfin računalu je stariji od verzije " + str(HELPER_VERSION) +
+                                   " i ne zna za HEVC. Na Proxmox hostu pokreni update-lxc.sh (jednom traži sudo lozinku).")
                 if self.cancel_ev.is_set():
                     raise EncTestCancelled()
                 speeds, fails, errs, util = [], [], [], []
@@ -3205,7 +3232,8 @@ class Handler(BaseHTTPRequestHandler):
                                                 body.get("candidate_jf")))
             if u.path == "/api/enctest/start":
                 return self._send(200, ENC.start((body.get("id") or "").replace("-", "").lower(), body.get("max"),
-                                                 body.get("dur"), body.get("mode"), str(body.get("target") or "1080")))
+                                                 body.get("dur"), body.get("mode"), str(body.get("target") or "1080"),
+                                                 str(body.get("codec") or "h264")))
             if u.path == "/api/enctest/cancel":
                 return self._send(200, ENC.cancel())
             if u.path == "/api/nvpatch/apply":
