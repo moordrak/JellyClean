@@ -151,6 +151,7 @@ header{gap:12px}
 .path{font-family:var(--mono);word-break:break-all;overflow-wrap:anywhere}
 .note{overflow-wrap:anywhere;min-width:0;max-width:100%}
 #et-file,#et-res{min-width:0;max-width:100%}
+.nvp-link{color:var(--accent,#00a4dc)}
 .dg-item:hover{background:rgba(255,255,255,.05)}
 .dg-h{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:14px 0 4px;font-weight:600}
 </style>
@@ -338,6 +339,10 @@ header{gap:12px}
   <div id="et-progress"></div>
   <div id="et-result"></div>
   <div class="card" style="padding:0;margin-top:14px" id="et-tablecard"><table id="et-table"><thead><tr><th class="num">Tokova</th><th>Najsporiji tok</th><th class="num">Prosjek</th><th class="num">ENC max</th><th class="num">DEC max</th><th class="num">GPU max</th><th class="num">VRAM</th><th>Stanje</th></tr></thead><tbody></tbody></table></div>
+  <div class="card" style="margin-top:14px" id="nvp-card">
+    <h3>Ograničenje NVENC sesija · patch drivera</h3>
+    <div id="nvp-body"><div class="sub">Učitavam…</div></div>
+  </div>
 </section>
 
 <!-- KANTA -->
@@ -462,7 +467,7 @@ $$('#nav button').forEach(b=>b.onclick=()=>{
   current=b.dataset.tab; clearSel(); refreshCurrent();
 });
 function refreshCurrent(){
-  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash, jfconfig:()=>loadJc(false), paths:loadPc, enctest:loadEt}[current]||(()=>{}))();
+  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash, jfconfig:()=>loadJc(false), paths:loadPc, enctest:()=>{ loadEt(); loadNvp(); }}[current]||(()=>{}))();
 }
 
 // ---------------- pregled ----------------
@@ -990,6 +995,72 @@ async function runDiag(id){
 
 // ---------------- test paralelnog enkodiranja ----------------
 let ET=null, ET_FILE=null, etTimer=null, etQTimer=null;
+// ---------------- NVENC patch ----------------
+let NVP=null, NVP_RES=null;
+async function loadNvp(){
+  $('#nvp-body').innerHTML='<div class="sub">Provjeravam driver na Jellyfin računalu…</div>';
+  try{ NVP=await api('/api/nvpatch'); }catch(e){ NVP={error:e.message}; }
+  renderNvp();
+}
+function renderNvp(){
+  const r=NVP||{}, b=$('#nvp-body');
+  if(r.enabled===false){ b.innerHTML=`<div class="sub">${esc(r.reason)}</div>`; return; }
+  if(r.error){ b.innerHTML=`<div class="note warn" style="margin:0">${esc(r.error)}</div>`; return; }
+  if(r.none){ b.innerHTML='<div class="sub">Na Jellyfin računalu nije pronađen NVIDIA driver (nvidia-smi). Patch se primjenjuje na računalu na kojem je driver instaliran.</div>'; return; }
+  const st=r.state||{}, busy=!!r.busy;
+  let pill;
+  if(r.patched) pill='<span class="pill ok">patchan</span>';
+  else if(r.lost) pill='<span class="pill bad">patch je nestao</span>';
+  else pill='<span class="pill">original</span>';
+  let sup;
+  if(r.supported===true) sup='<span class="pill ok">patch postoji</span>';
+  else if(r.supported===false) sup='<span class="pill warn">za ovu verziju nema patcha</span>';
+  else sup='<span class="pill warn">nepoznato</span>';
+  let h=`<div class="toolbar" style="margin:0 0 10px;flex-wrap:wrap;gap:8px 16px">
+    <span>${esc(r.gpu||'NVIDIA')}</span><span class="sub">driver <b>${esc(r.driver||'?')}</b></span>${pill}${sup}</div>`;
+  if(r.lost) h+=`<div class="note warn">Driver je nadograđen${r.lost_from?` (patch je bio primijenjen na <b>${esc(r.lost_from)}</b>)`:''}, a nadogradnja je vratila originalnu biblioteku. ${r.supported?'Ponovno primijeni patch.':'Za novu verziju patch još ne postoji.'}</div>`;
+  if(r.supported===false){
+    h+=`<div class="note warn">Za driver ${esc(r.driver)} u provjerenoj verziji patcha nema zapisa.${r.supported_same_branch&&r.supported_same_branch.length?` Podržane verzije iz iste grane: ${r.supported_same_branch.map(esc).join(', ')}.`:''} Nadogradi ili vrati driver na podržanu verziju, ili pričekaj novu verziju JellyCleana.</div>`;
+  }
+  if(r.supported===null && r.supported_error) h+=`<div class="note warn">${esc(r.supported_error)}</div>`;
+  if(!r.lib) h+=`<div class="note warn">Biblioteka libnvidia-encode za driver ${esc(r.driver||'')} nije pronađena na standardnim mjestima.</div>`;
+  if(!r.bash) h+='<div class="note warn">Na Jellyfin računalu nema bash-a, a patch skripta ga treba.</div>';
+  h+=`<p class="sub" style="margin:0 0 10px">GeForce driveri ograničavaju broj istovremenih NVENC sesija. Patch (<a class="nvp-link" href="https://github.com/keylase/nvidia-patch" target="_blank" rel="noopener">keylase/nvidia-patch</a>, provjerena verzija ${esc((r.commit||'').slice(0,12))}) mijenja jednu provjeru u biblioteci drivera na Jellyfin računalu. Prije izmjene sprema se kopija originala, a Jellyfin se zaustavi i ponovno pokrene. Patch je neslužben; nakon svake nadogradnje drivera treba ga primijeniti ponovno.</p>`;
+  const canPatch=r.supported===true && r.lib && r.bash && !r.patched && !busy;
+  h+=`<div class="toolbar" style="margin:0 0 6px">
+    <button class="btn primary" id="nvp-apply" ${canPatch?'':'disabled'}>${r.lost?'Ponovno primijeni patch':'Primijeni patch'}</button>
+    <button class="btn" id="nvp-rollback" ${(r.backup && r.patched && !busy)?'':'disabled'}>Vrati original</button>
+    <button class="btn" id="nvp-verify" ${busy?'disabled':''}>Provjeri ograničenje (${r.verify_n||13} sesija)</button>
+    <span class="sub" id="nvp-busy">${busy?esc('U tijeku: '+r.busy):''}</span></div>`;
+  let v=(NVP_RES&&NVP_RES.verify)||st.verify; if(v && v.driver && r.driver && v.driver!==r.driver) v=null;
+  if(v) h+=`<div class="note ${v.ok===v.n?'':'warn'}" style="margin:8px 0 0"><b>Provjera</b> (${new Date(v.time).toLocaleString('hr-HR')}${v.driver?', driver '+esc(v.driver):''}): ${esc(v.message)}${v.errors&&v.errors.length&&v.ok!==v.n?`<div class="sub path">${v.errors.map(esc).join('<br>')}</div>`:''}</div>`;
+  const a=(NVP_RES&&NVP_RES.apply)||null;
+  if(a) h+=`<div class="note ${a.ok?'':'warn'}" style="margin:8px 0 0"><b>${esc(a.message)}</b>${(a.warnings||[]).map(w=>'<br>'+esc(w)).join('')}${a.log?`<details style="margin-top:6px"><summary class="sub">Ispis patch skripte</summary><pre class="sub path" style="white-space:pre-wrap;margin:6px 0 0">${esc(a.log)}</pre></details>`:''}</div>`;
+  else if(st.last_action) h+=`<div class="sub" style="margin-top:8px">Zadnja radnja: ${esc(st.last_action.message)} (${new Date(st.last_action.time).toLocaleString('hr-HR')}, driver ${esc(st.last_action.driver||'?')})</div>`;
+  b.innerHTML=h;
+  const btnBusy=(t)=>{ $$('#nvp-body button').forEach(x=>x.disabled=true); $('#nvp-busy').textContent=t; };
+  $('#nvp-apply').onclick=async()=>{
+    if(!confirm(`Primijeniti NVENC patch na driver ${r.driver}?\n\n• Jellyfin (${(r.ctl||'').split(' ')[1]||'servis'}) će se zaustaviti i ponovno pokrenuti - gledanje se prekida na nekoliko sekundi.\n• Original biblioteke se sprema i može se vratiti gumbom "Vrati original".\n• Patch je neslužben i protivan NVIDIA licenci za GeForce kartice.`)) return;
+    btnBusy('Primjenjujem patch i ponovno pokrećem Jellyfin…');
+    try{ const res=await api('/api/nvpatch/apply',{action:'patch'}); NVP_RES={apply:res}; NVP=res.status; renderNvp();
+      toast(res.message, !res.ok);
+      if(res.ok && NVP && NVP.patched){ btnBusy('Čekam da se Jellyfin podigne, zatim provjeravam ograničenje…'); await new Promise(x=>setTimeout(x,8000)); await runNvpVerify(); }
+    }catch(e){ toast(e.message,true); loadNvp(); }
+  };
+  $('#nvp-rollback').onclick=async()=>{
+    if(!confirm('Vratiti originalnu biblioteku drivera?\n\nJellyfin će se zaustaviti i ponovno pokrenuti, a ograničenje sesija ponovno vrijedi.')) return;
+    btnBusy('Vraćam original…');
+    try{ const res=await api('/api/nvpatch/apply',{action:'rollback'}); NVP_RES={apply:res}; NVP=res.status; renderNvp(); toast(res.message, !res.ok); }catch(e){ toast(e.message,true); loadNvp(); }
+  };
+  $('#nvp-verify').onclick=()=>{
+    if(ET && ET.active && ET.active.length && !confirm(`Upravo se transkodira:\n${ET.active.join('\n')}\n\nProvjera traje oko 10 s i kratko zauzme sve sesije. Nastaviti?`)) return;
+    btnBusy('Pokrećem '+(r.verify_n||13)+' istovremenih NVENC sesija (oko 10 s)…'); runNvpVerify();
+  };
+}
+async function runNvpVerify(){
+  try{ const v=await api('/api/nvpatch/verify',{}); NVP_RES={...(NVP_RES||{}), verify:v}; toast(v.message, v.ok!==v.n); }catch(e){ toast(e.message,true); }
+  loadNvp();
+}
 async function loadEt(){ try{ ET=await api('/api/enctest'); }catch(e){ return toast(e.message,true); } renderEt(); if(ET.running){ clearTimeout(etTimer); etTimer=setTimeout(loadEt,2000); } }
 $('#et-q').oninput=()=>{ clearTimeout(etQTimer); etQTimer=setTimeout(etSearch,350); };
 async function etSearch(){

@@ -30,6 +30,7 @@ Web servis za pregled i čišćenje prostora na Jellyfin poslužitelju. Nema van
   - preko SSH-a: vidi li datoteku i može li je čitati **sam Jellyfin kontejner**, `ffprobe` provjera sadržaja te greške za tu stavku iz Jellyfin i FFmpeg logova
   - jasan zaključak (zapis bez datoteke, kriva putanja, mount, dozvole, oštećena datoteka, neuspjelo transkodiranje, problem do klijenta) i popravak jednim klikom (osvježi stavku ili javi Jellyfinu datoteku)
 - **Test paralelnog enkodiranja**: koliko istovremenih transkodiranja NVIDIA kartica u Jellyfinu može odraditi.
+- **NVENC patch drivera**: uklanja ograničenje broja istovremenih NVENC sesija na GeForce karticama ([keylase/nvidia-patch](https://github.com/keylase/nvidia-patch)), uz sigurnosnu kopiju, vraćanje originala, provjeru s 13 istovremenih sesija i upozorenje kad nadogradnja drivera poništi patch.
   - testnu datoteku biraš iz biblioteke, a test se preko SSH-a izvodi **u Jellyfin kontejneru** s Jellyfinovim ffmpegom (NVDEC → `scale_cuda` → `h264_nvenc`)
   - broj istovremenih tokova raste korak po korak, uz praćenje brzine svakog toka te opterećenja ENC, DEC, GPU i VRAM
   - dva načina: *maksimalna brzina* (granica kartice i drivera) i *stvarno vrijeme* (opterećenje kao kod gledanja)
@@ -114,7 +115,7 @@ Bez Jellyfina skripta predlaže mape prema imenu (`movies`, `filmovi`, `tv`, `se
 - putanje se otkrivaju same, preko `docker inspect` za kontejner s „jellyfin” u imenu (linuxserver ili službeni image) ili kao standardna paketna instalacija (`/var/lib/jellyfin`)
 - **SSH korisnik ne mora biti root.** Skripta prvo provjeri ima li korisnik već prava na cache, log i metadata mape, što je čest slučaj kod linuxserver imagea s `PUID` jednakim UID-u korisnika. Ako ima, ništa se ne mijenja.
 - Ako nema, a root se dobiva preko `sudo` uz lozinku, skripta lozinku pita **jednom** i ne sprema je. Koristi je za otkrivanje putanja i za postavljanje **ograničenog pomoćnog programa**:
-  - `/usr/local/sbin/jellyclean-helper`, vlasnik root. Zna samo izmjeriti mape te obrisati cache, stare logove i siročad u metadata, i to samo u putanjama upisanima u njega
+  - `/usr/local/sbin/jellyclean-helper`, vlasnik root. Zna samo izmjeriti mape te obrisati cache, stare logove i siročad u metadata, i to samo u putanjama upisanima u njega. Uz to pokreće test enkodiranja i NVENC patch: patch skripta stiže preko SSH-a, ali se pokreće samo ako se njen SHA256 nalazi na popisu odobrenih verzija upisanom u pomoćni program
   - `/etc/sudoers.d/jellyclean`, provjeren s `visudo`: `<korisnik> ALL=(root) NOPASSWD: /usr/local/sbin/jellyclean-helper`
 
   Tako JellyClean i njegov SSH ključ nemaju potpuni root na tom računalu. Uklanjanje: `sudo rm /usr/local/sbin/jellyclean-helper /etc/sudoers.d/jellyclean`
@@ -161,3 +162,18 @@ MEDIA_PATHS="Filmovi=/mnt/media/movies" JELLYFIN_URL=http://jf:8096 JELLYFIN_API
 - Skener čita samo metapodatke datoteka i ne otvara sam video. Na velikim NFS mapama prvo skeniranje ipak može potrajati nekoliko minuta.
 - Kanta je na istom disku, pa se prostor stvarno oslobađa tek kad se kanta isprazni.
 - POST zahtjevi traže header `X-Requested-With: JellyClean` kao zaštitu od CSRF-a.
+
+## NVENC patch drivera
+
+Kartica *Test enkodiranja* → **Ograničenje NVENC sesija**:
+
+- pokazuje verziju drivera na Jellyfin računalu, je li driver patchan i postoji li patch za tu verziju
+- **Primijeni patch**: zaustavi Jellyfin, spremi original biblioteke (`/opt/nvidia/libnvidia-encode-backup`), primijeni patch, ponovno pokrene Jellyfin i provjeri 13 istovremenih sesija
+- **Vrati original**: vraća sigurnosnu kopiju
+- **Provjeri ograničenje**: 13 kratkih istovremenih NVENC enkodiranja unutar Jellyfin okruženja
+- nakon nadogradnje drivera javlja da je patch nestao
+
+Koristi se zakucana, provjerena verzija skripte `patch.sh` iz keylase/nvidia-patch (commit u `NVPATCH_COMMIT`). JellyClean je preuzima s GitHuba i provjerava SHA256, a pomoćni program na Jellyfin računalu provjerava ga ponovno prije pokretanja. Ako LXC nema pristup GitHubu, datoteku možeš ručno spremiti u `DATA_DIR/nvidia-patch.sh`.
+
+Patch se primjenjuje na računalu na kojem je instaliran NVIDIA driver (VM ili host s Dockerom). Ne radi kad je Jellyfin u LXC-u kojem driver dolazi s Proxmox hosta. Patch je neslužben i protivan NVIDIA licenci za GeForce kartice. Traži `ALLOW_DELETE=true`.
+

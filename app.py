@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.6.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -949,7 +949,16 @@ import subprocess
 HEX32 = re.compile(r"^[0-9a-f]{32}$")
 
 
-HELPER_VERSION = 5
+HELPER_VERSION = 6
+
+# NVENC patch: keylase/nvidia-patch, zakucana provjerena verzija. Skripta se ne sprema u ovaj
+# repozitorij (nema licence za redistribuciju) - preuzima se s GitHuba i provjerava sha256 ovdje
+# i ponovno u pomoćnom programu na Jellyfin računalu.
+NVPATCH_COMMIT = "7f30a61d159fa4c9644a7bf9d71a679c07062f5f"
+NVPATCH_SHA256 = ["317c1af2a403a641a05aceadfeac17c4a3b53e82cf0ddf33b2e9528437456ee0"]
+NVPATCH_URLS = [f"https://raw.githubusercontent.com/keylase/nvidia-patch/{NVPATCH_COMMIT}/patch.sh",
+                f"https://github.com/keylase/nvidia-patch/raw/{NVPATCH_COMMIT}/patch.sh"]
+NVPATCH_VERIFY_N = 13
 
 HELPER_BODY = r'''
 set -u
@@ -1221,6 +1230,98 @@ op_enckill() {
   $EX pkill -f jellyclean-enctest >/dev/null 2>&1; echo "KILLED"
 }
 
+# ---- NVENC patch (keylase/nvidia-patch): skripta stiže na stdin (base64), pokreće se samo ako
+# ---- se njen sha256 nalazi na popisu odobrenih verzija zapečenom u ovom pomoćnom programu
+NVP_SHA="__NVPSHA__"
+NVP_BAK=/opt/nvidia/libnvidia-encode-backup
+nv_lib() {
+  NVVER=""; NVOBJ=""; NVLIB=""
+  command -v nvidia-smi >/dev/null 2>&1 || return 1
+  NVVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' \r')
+  [ -n "$NVVER" ] || return 1
+  maj=${NVVER%%.*}
+  NVOBJ=libnvidia-encode.so
+  case "$maj" in ''|*[!0-9]*) ;; *) [ "$maj" -ge 415 ] && [ "$maj" -le 435 ] && NVOBJ=libnvcuvid.so ;; esac
+  for nvdir in /usr/lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu/nvidia/current /usr/lib/x86_64-linux-gnu/nvidia/tesla "/usr/lib/x86_64-linux-gnu/nvidia/tesla-$maj" /usr/lib64 /usr/lib "/usr/lib/nvidia-$maj"; do
+    [ -e "$nvdir/$NVOBJ.$NVVER" ] && { NVLIB="$nvdir/$NVOBJ.$NVVER"; break; }
+  done
+  return 0
+}
+jf_running() {
+  case "$JCTL" in
+    docker:*) [ "$(docker inspect -f '{{.State.Running}}' "${JCTL#docker:}" 2>/dev/null)" = true ] ;;
+    systemd:*) systemctl is-active --quiet jellyfin ;;
+    *) return 1 ;;
+  esac
+}
+op_nvstatus() {
+  jf_find_ctl; echo "CTL ${JCTL:-none} ${JNAME:--}"
+  if ! nv_lib; then echo "NVNONE"; return; fi
+  echo "NVGPU $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
+  echo "NVDRV $NVVER"
+  echo "NVLIB ${NVLIB:--}"
+  b="$NVP_BAK/$NVOBJ.$NVVER"
+  if [ -f "$b" ] && [ -n "$NVLIB" ]; then
+    echo "NVBAK 1"
+    if cmp -s "$b" "$NVLIB"; then echo "NVPATCHED 0"; else echo "NVPATCHED 1"; fi
+  else echo "NVBAK 0"; echo "NVPATCHED 0"; fi
+  for f in "$NVP_BAK"/*; do [ -f "$f" ] && echo "NVOLD $(basename "$f")"; done
+  if command -v bash >/dev/null 2>&1; then echo "NVBASH 1"; else echo "NVBASH 0"; fi
+}
+nvp_cleanup() {
+  # briše samo privremenu mapu koju je napravio mktemp (ime jc-nvp.*), nikad ništa drugo
+  case "${NVTMP:-}" in */jc-nvp.*) [ -d "$NVTMP" ] && rm -rf -- "$NVTMP" ;; esac
+  NVTMP=""
+}
+op_nvpatch() {
+  case "${1:-}" in patch) fl="" ;; rollback) fl="-r" ;; *) echo "ERR nepoznata radnja"; return ;; esac
+  command -v bash >/dev/null 2>&1 || { echo "ERR na Jellyfin računalu nema bash-a"; return; }
+  command -v sha256sum >/dev/null 2>&1 || { echo "ERR na Jellyfin računalu nema sha256sum"; return; }
+  NVTMP=$(mktemp -d "${TMPDIR:-/tmp}/jc-nvp.XXXXXX") || { echo "ERR mktemp nije uspio"; return; }
+  chmod 700 "$NVTMP"
+  if ! base64 -d > "$NVTMP/patch.sh" 2>/dev/null; then echo "ERR skripta nije ispravno prenesena"; nvp_cleanup; return; fi
+  h=$(sha256sum "$NVTMP/patch.sh" | cut -d' ' -f1)
+  ok=0; for x in $NVP_SHA; do [ "$h" = "$x" ] && ok=1; done
+  if [ "$ok" != 1 ]; then echo "ERR skripta za patch nije odobrena verzija (sha256 $h) - nadogradi pomoćni program"; nvp_cleanup; return; fi
+  if ! nv_lib; then echo "ERR nvidia-smi ne radi na $(hostname) - NVIDIA driver nije instaliran na ovom računalu"; nvp_cleanup; return; fi
+  jf_find_ctl
+  st=0
+  if [ -n "$JCTL" ] && jf_running; then
+    if jf_ctl stop; then st=1; echo "STOPPED $JNAME"; sleep 2; else echo "WARN Jellyfin ($JNAME) nije zaustavljen - nastavljam"; fi
+  fi
+  out=$(cd / && bash "$NVTMP/patch.sh" $fl 2>&1); rc=$?
+  printf '%s\n' "$out" | sed 's/^/OUT /'
+  echo "RC $rc"
+  nvp_cleanup
+  if [ "$st" = 1 ]; then
+    if jf_ctl start; then echo "STARTED $JNAME"; else echo "WARN Jellyfin ($JNAME) se nije ponovno pokrenuo - pokreni ga ručno"; fi
+  fi
+}
+op_nvverify() {
+  n=${1:-13}
+  case "$n" in ''|*[!0-9]*) echo "ERR neispravan broj sesija"; return ;; esac
+  [ "$n" -ge 1 ] && [ "$n" -le 24 ] || { echo "ERR broj sesija 1-24"; return; }
+  jf_find_ctl; jf_exec_prefix
+  echo "CTL ${JCTL:-none} ${JNAME:--}"
+  $EX nvidia-smi -L >/dev/null 2>&1 || { echo "ERR nvidia-smi nije dostupan u Jellyfin okruženju - NVIDIA kartica nije proslijeđena Jellyfinu"; return; }
+  $EX sh -c '
+    FF=/usr/lib/jellyfin-ffmpeg/ffmpeg; [ -x "$FF" ] || FF=$(command -v ffmpeg)
+    [ -n "$FF" ] || { echo "ERR u Jellyfin okruženju nema ffmpega"; exit 0; }
+    n=$1; d=$(mktemp -d); pids=""; i=1
+    while [ $i -le $n ]; do
+      "$FF" -hide_banner -nostdin -v error -re -f lavfi -i testsrc2=size=640x360:rate=25 -t 8 \
+        -c:v h264_nvenc -preset p1 -b:v 1M -metadata title=jellyclean-enctest -f null - 2>"$d/$i.log" &
+      pids="$pids $!"; i=$((i+1))
+    done
+    i=1
+    for x in $pids; do
+      if wait $x; then echo "VOK $i"; else echo "VFAIL $i $(grep -v "^\s*$" "$d/$i.log" | head -2 | tr "\n" " " | cut -c1-240)"; fi
+      i=$((i+1))
+    done
+    rm -rf "$d"
+  ' _ "$n"
+}
+
 main() {
   op=${1:-}; [ $# -gt 0 ] && shift
   case "$op" in
@@ -1235,6 +1336,9 @@ main() {
     fileinfo) op_fileinfo "$@" ;;
     enctest) op_enctest "$@" ;;
     enckill) op_enckill ;;
+    nvstatus) op_nvstatus ;;
+    nvpatch) op_nvpatch "$@" ;;
+    nvverify) op_nvverify "$@" ;;
     *) echo "ERR nepoznata operacija '$op'"; exit 2 ;;
   esac
 }
@@ -1246,10 +1350,12 @@ def helper_script(standalone=True):
     standalone=True: datoteka za /usr/local/sbin/jellyclean-helper (putanje zapečene, poziva main "$@")."""
     q = shlex.quote
     head = ("#!/bin/sh\n# JellyClean helper - generirano. Dopušta SAMO mjerenje i čišćenje Jellyfin\n"
-            "# cachea, logova i siročadi u metadata/library unutar ovih putanja:\n"
+            "# cachea, logova i siročadi u metadata/library unutar ovih putanja, test\n"
+            "# enkodiranja i NVENC patch (samo odobrene verzije skripte, provjera sha256):\n"
             f"C={q(CFG['jf_config'])}\nCACHE={q(CFG['jf_cache'])}\nLOG={q(CFG['jf_log'])}\n"
             f"DATA={q(CFG['jf_data'])}\nMETA={q(CFG['jf_metadata'])}\n")
-    return head + HELPER_BODY.replace("__HVER__", str(HELPER_VERSION)) + ('main "$@"\n' if standalone else "")
+    body = HELPER_BODY.replace("__HVER__", str(HELPER_VERSION)).replace("__NVPSHA__", " ".join(NVPATCH_SHA256))
+    return head + body + ('main "$@"\n' if standalone else "")
 
 
 class SSHError(Exception):
@@ -2261,6 +2367,258 @@ ENC = EncTest()
 
 
 # --------------------------------------------------------------------------
+# NVENC patch: uklanjanje ograničenja istovremenih NVENC sesija (keylase/nvidia-patch)
+# --------------------------------------------------------------------------
+
+class NvPatch:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.busy = None
+        self.path = os.path.join(CFG["data_dir"], "nvpatch.json")
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                self.state = json.load(f)
+        except Exception:
+            self.state = {}
+
+    def _save(self):
+        try:
+            os.makedirs(CFG["data_dir"], exist_ok=True)
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(self.state, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+    # -- skripta --
+    def script(self):
+        """Vrati sadržaj patch.sh (bytes) provjerene verzije: iz lokalne kopije ili s GitHuba."""
+        local = os.path.join(CFG["data_dir"], f"nvidia-patch-{NVPATCH_COMMIT[:12]}.sh")
+        manual = os.path.join(CFG["data_dir"], "nvidia-patch.sh")
+        for f in (local, manual):
+            try:
+                with open(f, "rb") as fh:
+                    b = fh.read()
+                if hashlib.sha256(b).hexdigest() in NVPATCH_SHA256:
+                    return b
+            except Exception:
+                pass
+        if time.time() - getattr(self, "_dl_fail_t", 0) < 300:
+            raise SSHError(self._dl_fail_msg)
+        errs = []
+        for url in NVPATCH_URLS:
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "JellyClean/" + APP_VERSION})
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    b = r.read(2_000_000)
+                h = hashlib.sha256(b).hexdigest()
+                if h not in NVPATCH_SHA256:
+                    errs.append(f"{url}: neočekivan sha256 {h[:16]}…")
+                    continue
+                try:
+                    os.makedirs(CFG["data_dir"], exist_ok=True)
+                    with open(local, "wb") as fh:
+                        fh.write(b)
+                except Exception:
+                    pass
+                return b
+            except Exception as e:
+                errs.append(f"{url}: {e}")
+        self._dl_fail_t = time.time()
+        self._dl_fail_msg = ("Skripta za patch se ne može preuzeti s GitHuba (" + "; ".join(errs)[:400] +
+                             f"). Možeš je ručno spremiti u {manual} (keylase/nvidia-patch, commit {NVPATCH_COMMIT[:12]}).")
+        raise SSHError(self._dl_fail_msg)
+
+    def supported(self):
+        try:
+            txt = self.script().decode("utf-8", "replace")
+        except SSHError as e:
+            return None, str(e)
+        return set(re.findall(r'^\s*\["([0-9][0-9.]*)"\]=', txt, re.M)), None
+
+    @staticmethod
+    def _helper_err(e):
+        m = str(e)
+        if "nepoznata operacija" in m:
+            return SSHError("Pomoćni program na Jellyfin računalu je stariji od verzije " + str(HELPER_VERSION) +
+                            " i ne zna za NVENC patch. Na Proxmox hostu pokreni update-lxc.sh (jednom traži sudo lozinku).")
+        return e
+
+    # -- stanje --
+    def status(self):
+        if not JFC.enabled():
+            return {"enabled": False, "reason": "Treba SSH pristup Jellyfin računalu (kartica Jellyfin config)."}
+        try:
+            out = JFC.run("nvstatus", timeout=60)
+        except SSHError as e:
+            return {"enabled": True, "error": str(self._helper_err(e)), "state": self.state}
+        r = {"enabled": True, "gpu": None, "driver": None, "lib": None, "backup": False, "patched": False,
+             "old_backups": [], "ctl": None, "bash": True, "state": self.state, "commit": NVPATCH_COMMIT,
+             "verify_n": NVPATCH_VERIFY_N, "busy": self.busy}
+        for line in out.splitlines():
+            k, _, v = line.partition(" ")
+            if k == "NVNONE":
+                r["none"] = True
+            elif k == "NVGPU":
+                r["gpu"] = v.strip()
+            elif k == "NVDRV":
+                r["driver"] = v.strip()
+            elif k == "NVLIB":
+                r["lib"] = None if v.strip() == "-" else v.strip()
+            elif k == "NVBAK":
+                r["backup"] = v.strip() == "1"
+            elif k == "NVPATCHED":
+                r["patched"] = v.strip() == "1"
+            elif k == "NVOLD":
+                r["old_backups"].append(v.strip())
+            elif k == "NVBASH":
+                r["bash"] = v.strip() == "1"
+            elif k == "CTL":
+                r["ctl"] = v.strip()
+        if r.get("none"):
+            return r
+        sup, serr = self.supported()
+        r["supported"] = None if sup is None else (r["driver"] in sup)
+        r["supported_error"] = serr
+        if sup:
+            maj = (r["driver"] or "").split(".")[0]
+            r["supported_same_branch"] = sorted((v for v in sup if v.split(".")[0] == maj),
+                                                key=lambda v: [int(x) for x in v.split(".") if x.isdigit()])[-6:]
+        drv = r["driver"]
+        prev = self.state.get("patched_driver")
+        others = [b.rsplit(".so.", 1)[-1] for b in r["old_backups"] if not b.endswith(".so." + (drv or ""))]
+        # patch je nestao: prije je bio primijenjen (JellyClean pamti ili postoje kopije za stare drivere)
+        r["lost"] = (not r["patched"]) and bool((prev and prev != drv) or
+                                                (others and not r["backup"] and "rolled_back_at" not in self.state))
+        r["lost_from"] = prev if (prev and prev != drv) else (others[-1] if others else None)
+        if r["patched"] and prev != drv:
+            self.state.pop("rolled_back_at", None)
+            self.state["patched_driver"] = drv
+            self._save()
+        return r
+
+    # -- radnje --
+    def _guard(self, what):
+        if ENC.running:
+            raise SSHError("Test enkodiranja je u tijeku - pričekaj da završi")
+        with self.lock:
+            if self.busy:
+                raise SSHError(f"Već je u tijeku: {self.busy}")
+            self.busy = what
+
+    def apply(self, action):
+        if action not in ("patch", "rollback"):
+            raise SSHError("Nepoznata radnja")
+        if not JFC.enabled():
+            raise SSHError("Treba SSH pristup Jellyfin računalu")
+        script = self.script()
+        if action == "patch":
+            pre = self.status()
+            if pre.get("error"):
+                raise SSHError(pre["error"])
+            if pre.get("none"):
+                raise SSHError("Na Jellyfin računalu nije pronađen NVIDIA driver")
+            if pre.get("supported") is False:
+                raise SSHError(f"Za driver {pre.get('driver')} patch ne postoji - ništa nije mijenjano")
+            if not pre.get("lib"):
+                raise SSHError("Biblioteka libnvidia-encode nije pronađena - ništa nije mijenjano")
+            if pre.get("patched"):
+                return {"ok": True, "message": "Driver je već patchan - ništa nije mijenjano.", "log": "", "rc": 0,
+                        "status": pre}
+        self._guard("primjena patcha" if action == "patch" else "vraćanje originala")
+        try:
+            b64 = base64.b64encode(script).decode()
+            lines = [b64[i:i + 76] for i in range(0, len(b64), 76)]
+            try:
+                out = JFC.run("nvpatch", (action,), lines=lines, timeout=240)
+            except SSHError as e:
+                raise self._helper_err(e)
+            log_lines, rc, info = [], None, {}
+            for line in out.splitlines():
+                k, _, v = line.partition(" ")
+                if k == "OUT":
+                    log_lines.append(v)
+                elif k == "RC":
+                    rc = int(v) if v.strip().lstrip("-").isdigit() else -1
+                elif k in ("STOPPED", "STARTED"):
+                    info[k.lower()] = v.strip()
+                elif k == "WARN":
+                    info.setdefault("warnings", []).append(v.strip())
+            ok = rc == 0
+            text = "\n".join(log_lines)
+            if ok and action == "patch" and "Skipping patch" in text:
+                msg = "Driver je već patchan (datoteka se razlikuje od sigurnosne kopije) - ništa nije mijenjano."
+            elif ok and action == "patch":
+                msg = "Patch je primijenjen."
+            elif ok:
+                msg = "Vraćena je originalna biblioteka drivera."
+            elif "not found" in text and "Patch for this" in text:
+                msg = "Za ovu verziju drivera patch (još) ne postoji."
+            elif "Backup not found" in text:
+                msg = "Sigurnosna kopija nije pronađena - driver nije bio patchan ovim alatom."
+            elif "Could not find bytes" in text:
+                msg = "Biblioteka drivera ne sadrži očekivani kod - ništa nije mijenjano."
+            elif "cannot detect driver directory" in text:
+                msg = "Biblioteka drivera (libnvidia-encode) nije pronađena na standardnim mjestima."
+            else:
+                msg = "Patch skripta je javila grešku."
+            st = self.status()
+            if ok and action == "patch" and st.get("patched"):
+                self.state["patched_driver"] = st.get("driver")
+                self.state["patched_at"] = now_iso()
+                self.state.pop("rolled_back_at", None)
+            if ok and action == "rollback":
+                self.state.pop("patched_driver", None)
+                self.state["rolled_back_at"] = now_iso()
+            self.state["last_action"] = {"action": action, "ok": ok, "time": now_iso(), "message": msg,
+                                         "driver": st.get("driver")}
+            self._save()
+            log(f"NVENC patch ({action}):", msg)
+            return {"ok": ok, "message": msg, "log": text[-4000:], "rc": rc, **info, "status": st}
+        finally:
+            self.busy = None
+
+    def verify(self):
+        if not JFC.enabled():
+            raise SSHError("Treba SSH pristup Jellyfin računalu")
+        self._guard("provjera ograničenja")
+        try:
+            try:
+                out = JFC.run("nvverify", (NVPATCH_VERIFY_N,), timeout=120)
+            except SSHError as e:
+                raise self._helper_err(e)
+            okn, fails = 0, []
+            for line in out.splitlines():
+                k, _, v = line.partition(" ")
+                if k == "VOK":
+                    okn += 1
+                elif k == "VFAIL":
+                    fails.append(v.split(" ", 1)[1] if " " in v else "")
+            limit_err = any(re.search(r"OpenEncodeSessionEx|incompatible client key|session", f, re.I) for f in fails)
+            drv = None
+            try:
+                drv = (re.search(r"^NVDRV (\S+)", JFC.run("nvstatus", timeout=60), re.M) or [None, None])[1]
+            except Exception:
+                pass
+            res = {"n": NVPATCH_VERIFY_N, "ok": okn, "failed": len(fails), "errors": fails[:3],
+                   "limit_hit": limit_err, "time": now_iso(), "driver": drv}
+            if okn == NVPATCH_VERIFY_N:
+                res["message"] = f"Svih {okn} istovremenih NVENC sesija je uspjelo - ograničenje drivera ne smeta."
+            elif limit_err:
+                res["message"] = (f"Uspjelo je {okn} od {NVPATCH_VERIFY_N} sesija; ostale je odbio driver "
+                                  "(ograničenje broja sesija).")
+            else:
+                res["message"] = f"Uspjelo je {okn} od {NVPATCH_VERIFY_N} sesija (greška nije ograničenje drivera)."
+            self.state["verify"] = res
+            self._save()
+            return res
+        finally:
+            self.busy = None
+
+
+NVP = NvPatch()
+
+
+# --------------------------------------------------------------------------
 # Pozadinski poslovi
 # --------------------------------------------------------------------------
 
@@ -2542,6 +2900,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"items": diag_episodes(re.sub(r"[^0-9a-fA-F-]", "", q.get("series", "")))})
             if u.path == "/api/enctest":
                 return self._send(200, ENC.get())
+            if u.path == "/api/nvpatch":
+                return self._send(200, NVP.status())
             if u.path == "/api/enctest/item":
                 return self._send(200, EncTest.item_info(re.sub(r"[^0-9a-fA-F]", "", q.get("id", ""))))
             if u.path == "/api/jellyfin/tasks":
@@ -2608,6 +2968,12 @@ class Handler(BaseHTTPRequestHandler):
                                                  body.get("dur"), body.get("mode"), str(body.get("target") or "1080")))
             if u.path == "/api/enctest/cancel":
                 return self._send(200, ENC.cancel())
+            if u.path == "/api/nvpatch/apply":
+                if not CFG["allow_delete"]:
+                    return self._send(403, {"error": "Izmjene su isključene (ALLOW_DELETE=false)"})
+                return self._send(200, NVP.apply(body.get("action")))
+            if u.path == "/api/nvpatch/verify":
+                return self._send(200, NVP.verify())
             if u.path == "/api/paths/cancel":
                 return self._send(200, PC.cancel())
             if u.path == "/api/paths/notify":
