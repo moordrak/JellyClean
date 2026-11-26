@@ -152,6 +152,22 @@ header{gap:12px}
 .note{overflow-wrap:anywhere;min-width:0;max-width:100%}
 #et-file,#et-res{min-width:0;max-width:100%}
 .nvp-link{color:var(--accent,#00a4dc)}
+.gm-live{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.gm-live i{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.gm-live.on i{background:var(--ok);box-shadow:0 0 0 0 rgba(63,185,80,.6);animation:gmpulse 1.6s infinite}
+.gm-live.err i{background:var(--bad)}
+@keyframes gmpulse{70%{box-shadow:0 0 0 7px rgba(63,185,80,0)}100%{box-shadow:0 0 0 0 rgba(63,185,80,0)}}
+.gm-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:8px;margin:12px 0}
+.gm-t{background:rgba(30,34,43,.55);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0}
+.gm-t b{display:block;font-size:20px;font-variant-numeric:tabular-nums;line-height:1.2}
+.gm-t span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.gm-t small{display:block;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gm-t .bar{margin-top:5px;height:4px}
+.gm-chartwrap{position:relative}
+#gm-chart{width:100%;display:block}
+.gm-legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;margin-top:4px}
+.gm-legend span[style]::before{content:"";display:inline-block;width:10px;height:3px;border-radius:2px;background:var(--c);margin-right:5px;vertical-align:middle}
+@media (prefers-reduced-motion:reduce){.gm-live.on i{animation:none}}
 .dg-item:hover{background:rgba(255,255,255,.05)}
 .dg-h{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:14px 0 4px;font-weight:600}
 </style>
@@ -314,6 +330,21 @@ header{gap:12px}
 <section class="tab" id="tab-enctest">
   <div class="tab-head"><h2>Test paralelnog enkodiranja</h2><p>Koliko istovremenih transkodiranja NVIDIA kartica u Jellyfinu može odraditi</p></div>
   <div id="et-notes"></div>
+  <div class="card" id="gm-card" style="margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <h3 style="margin:0">Nadzor kartice uživo</h3>
+      <span class="sub" id="gm-name"></span>
+      <span style="flex:1"></span>
+      <span class="gm-live" id="gm-live"><i></i><span>povezujem…</span></span>
+      <button class="btn" id="gm-pause">Pauziraj</button>
+    </div>
+    <div id="gm-err"></div>
+    <div class="gm-tiles" id="gm-tiles"></div>
+    <div class="gm-chartwrap"><canvas id="gm-chart" height="170"></canvas>
+      <div class="gm-legend"><span style="--c:var(--accent)">GPU</span><span style="--c:#f0883e">ENC</span><span style="--c:#3fb950">DEC</span><span style="--c:#aa5cc3">VRAM</span><span class="sub">zadnjih 5 min · isti podaci kao nvtop (NVML)</span></div>
+    </div>
+    <div id="gm-procs"></div>
+  </div>
   <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(420px,1fr));margin-bottom:16px">
     <div class="card">
       <h3>1 · Testna datoteka</h3>
@@ -467,7 +498,7 @@ $$('#nav button').forEach(b=>b.onclick=()=>{
   current=b.dataset.tab; clearSel(); refreshCurrent();
 });
 function refreshCurrent(){
-  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash, jfconfig:()=>loadJc(false), paths:loadPc, enctest:()=>{ loadEt(); loadNvp(); }}[current]||(()=>{}))();
+  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash, jfconfig:()=>loadJc(false), paths:loadPc, enctest:()=>{ loadEt(); loadNvp(); gmStart(); }}[current]||(()=>{}))();
 }
 
 // ---------------- pregled ----------------
@@ -995,6 +1026,81 @@ async function runDiag(id){
 
 // ---------------- test paralelnog enkodiranja ----------------
 let ET=null, ET_FILE=null, etTimer=null, etQTimer=null;
+// ---------------- nadzor kartice uživo ----------------
+const GM={buf:[], seq:0, timer:null, paused:false, busy:false};
+function gmStart(){ if(GM.timer) return; GM.timer=setInterval(gmTick,1000); gmTick(); }
+function gmStop(){ clearInterval(GM.timer); GM.timer=null; }
+async function gmTick(){
+  if(!$('#tab-enctest').classList.contains('active') || document.hidden){ gmStop(); if(!document.hidden) return; return; }
+  if(GM.paused || GM.busy) return;
+  GM.busy=true;
+  try{
+    const r=await api('/api/gpumon?since='+GM.seq);
+    if(r.enabled===false){ gmStop(); $('#gm-card').style.display='none'; return; }
+    if(r.samples.length){ if(r.samples[0].seq<GM.seq) GM.buf=[]; GM.buf.push(...r.samples); GM.buf=GM.buf.slice(-300); GM.seq=r.seq; }
+    if(r.seq<GM.seq) { GM.seq=0; GM.buf=[]; }
+    $('#gm-name').textContent=r.name||'';
+    const live=$('#gm-live'), last=GM.buf[GM.buf.length-1], fresh=last && (Date.now()/1000-last.t)<6;
+    live.className='gm-live'+(r.error?' err':(fresh?' on':''));
+    live.lastChild.textContent=r.error?'greška':(fresh?'uživo':(r.running?'povezujem…':'zaustavljeno'));
+    $('#gm-err').innerHTML=r.error?`<div class="note warn" style="margin:10px 0 0">${esc(r.error)}</div>`:'';
+    gmRender(r.procs||[]);
+  }catch(e){ $('#gm-err').innerHTML=`<div class="note warn" style="margin:10px 0 0">${esc(e.message)}</div>`; }
+  finally{ GM.busy=false; }
+}
+function gmRender(procs){
+  const s=GM.buf[GM.buf.length-1];
+  const pct=v=>v==null?'–':Math.round(v)+'%';
+  const bar=(v,c)=>`<div class="bar"><i style="width:${Math.max(0,Math.min(100,v||0))}%;background:${c}"></i></div>`;
+  if(s){
+    const mp=s.mem_total?s.mem/s.mem_total*100:null;
+    const peak=k=>{let m=null; for(const x of GM.buf.slice(-60)) if(x[k]!=null) m=Math.max(m??0,x[k]); return m;};
+    $('#gm-tiles').innerHTML=[
+      `<div class="gm-t"><span>GPU</span><b>${pct(s.gpu)}</b>${bar(s.gpu,'var(--accent)')}<small>vrh 1 min: ${pct(peak('gpu'))}</small></div>`,
+      `<div class="gm-t"><span>Enkoder (ENC)</span><b>${pct(s.enc)}</b>${bar(s.enc,'#f0883e')}<small>vrh 1 min: ${pct(peak('enc'))}</small></div>`,
+      `<div class="gm-t"><span>Dekoder (DEC)</span><b>${pct(s.dec)}</b>${bar(s.dec,'#3fb950')}<small>vrh 1 min: ${pct(peak('dec'))}</small></div>`,
+      `<div class="gm-t"><span>VRAM</span><b>${s.mem==null?'–':(s.mem/1024).toFixed(1)+' GB'}</b>${bar(mp,'#aa5cc3')}<small>od ${s.mem_total?(s.mem_total/1024).toFixed(1)+' GB':'?'} · ${pct(mp)}</small></div>`,
+      `<div class="gm-t"><span>Temperatura</span><b style="color:${s.temp>=83?'var(--bad)':s.temp>=75?'var(--warn)':'inherit'}">${s.temp==null?'–':Math.round(s.temp)+' °C'}</b><small>ventilator ${s.fan==null?'–':Math.round(s.fan)+'%'}</small></div>`,
+      `<div class="gm-t"><span>Snaga</span><b>${s.power==null?'–':Math.round(s.power)+' W'}</b>${bar(s.power_limit?s.power/s.power_limit*100:0,'var(--warn)')}<small>limit ${s.power_limit?Math.round(s.power_limit)+' W':'?'}</small></div>`,
+      `<div class="gm-t"><span>Takt</span><b>${s.clk==null?'–':Math.round(s.clk)+' MHz'}</b><small>memorija ${s.memclk==null?'–':Math.round(s.memclk)+' MHz'} · ${esc(s.pstate||'')}</small></div>`,
+      `<div class="gm-t"><span>Procesi</span><b>${procs.length}</b><small>${procs.filter(p=>!p.test && /ffmpeg/i.test(p.name)).length} transk.${procs.filter(p=>p.test).length?' · '+procs.filter(p=>p.test).length+' test':''}</small></div>`
+    ].join('');
+  } else $('#gm-tiles').innerHTML='<div class="sub">Čekam prve podatke s kartice…</div>';
+  gmChart();
+  if(!procs.length){ $('#gm-procs').innerHTML='<div class="sub" style="margin-top:8px">Trenutno nijedan proces ne koristi karticu.</div>'; return; }
+  const n=v=>v==null?'–':Math.round(v);
+  $('#gm-procs').innerHTML=`<div style="overflow-x:auto"><table class="dtable" style="margin-top:10px;min-width:720px"><thead><tr><th style="width:70px">PID</th><th style="width:120px">Proces</th><th>Datoteka</th><th style="width:170px">Izlaz</th><th style="width:56px" class="num">SM %</th><th style="width:56px" class="num">ENC %</th><th style="width:56px" class="num">DEC %</th><th style="width:80px" class="num">VRAM</th></tr></thead><tbody>${
+    procs.map(p=>`<tr><td>${p.pid}</td><td>${esc(p.name||'?')}${p.test?' <span class="pill">test</span>':''}</td><td class="path" title="${esc(p.input||'')}">${esc(p.input||'–')}</td><td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc([p.what,p.codec].filter(Boolean).join(' · ')||'–')}</td><td class="num">${n(p.sm)}</td><td class="num">${n(p.enc)}</td><td class="num">${n(p.dec)}</td><td class="num">${p.vram==null?'–':Math.round(p.vram)+' MB'}</td></tr>`).join('')
+  }</tbody></table></div>`;
+}
+function gmChart(){
+  const c=$('#gm-chart'); if(!c) return;
+  const dpr=window.devicePixelRatio||1, W=c.clientWidth, H=170;
+  if(c.width!==Math.round(W*dpr)){ c.width=Math.round(W*dpr); c.height=Math.round(H*dpr); }
+  const g=c.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,W,H);
+  const L=30, R=6, T=6, B=16, w=W-L-R, h=H-T-B, span=300;
+  const cs=getComputedStyle(document.documentElement);
+  g.font='11px system-ui,sans-serif'; g.fillStyle=cs.getPropertyValue('--muted')||'#8b949e'; g.strokeStyle='rgba(255,255,255,.07)'; g.lineWidth=1;
+  for(const v of [0,25,50,75,100]){ const y=T+h-h*v/100; g.beginPath(); g.moveTo(L,y+.5); g.lineTo(L+w,y+.5); g.stroke(); g.fillText(v+'%',2,y+4); }
+  const now=GM.buf.length?GM.buf[GM.buf.length-1].t:Date.now()/1000;
+  for(const [m,lab] of [[0,'sada'],[60,'-1 min'],[180,'-3 min'],[300,'-5 min']]){ const x=L+w-w*m/span; g.fillText(lab, Math.min(Math.max(L,x-(m?18:24)),L+w-28), H-3); }
+  const series=[['gpu',cs.getPropertyValue('--accent').trim()||'#00a4dc'],['enc','#f0883e'],['dec','#3fb950'],['memp','#aa5cc3']];
+  for(const [k,col] of series){
+    g.strokeStyle=col; g.lineWidth=2; g.lineJoin='round'; g.beginPath(); let started=false, prevT=null;
+    for(const s of GM.buf){
+      const v=k==='memp'?(s.mem_total?s.mem/s.mem_total*100:null):s[k];
+      const x=L+w-w*(now-s.t)/span; if(x<L) continue;
+      if(v==null || (prevT!=null && s.t-prevT>8)){ started=false; prevT=s.t; if(v==null) continue; }
+      const y=T+h-h*Math.max(0,Math.min(100,v))/100;
+      if(!started){ g.moveTo(x,y); started=true; } else g.lineTo(x,y);
+      prevT=s.t;
+    }
+    g.stroke();
+  }
+}
+window.addEventListener('resize',()=>{ if(GM.timer) gmChart(); });
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden && $('#tab-enctest').classList.contains('active')) gmStart(); });
+$('#gm-pause') && ($('#gm-pause').onclick=()=>{ GM.paused=!GM.paused; $('#gm-pause').textContent=GM.paused?'Nastavi':'Pauziraj'; if(!GM.paused) gmTick(); });
 // ---------------- NVENC patch ----------------
 let NVP=null, NVP_RES=null;
 async function loadNvp(){

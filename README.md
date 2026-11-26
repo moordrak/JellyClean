@@ -30,6 +30,7 @@ Web servis za pregled i čišćenje prostora na Jellyfin poslužitelju. Nema van
   - preko SSH-a: vidi li datoteku i može li je čitati **sam Jellyfin kontejner**, `ffprobe` provjera sadržaja te greške za tu stavku iz Jellyfin i FFmpeg logova
   - jasan zaključak (zapis bez datoteke, kriva putanja, mount, dozvole, oštećena datoteka, neuspjelo transkodiranje, problem do klijenta) i popravak jednim klikom (osvježi stavku ili javi Jellyfinu datoteku)
 - **Test paralelnog enkodiranja**: koliko istovremenih transkodiranja NVIDIA kartica u Jellyfinu može odraditi.
+- **Nadzor kartice uživo** (na kartici Test enkodiranja): GPU, ENC, DEC, VRAM, temperatura, snaga, ventilator i takt u stvarnom vremenu, graf zadnjih 5 minuta i popis procesa na kartici (koja se datoteka transkodira, u što, koliko ENC/DEC/VRAM troši). Isti NVML podaci koje prikazuje nvtop.
 - **NVENC patch drivera**: uklanja ograničenje broja istovremenih NVENC sesija na GeForce karticama ([keylase/nvidia-patch](https://github.com/keylase/nvidia-patch)), uz sigurnosnu kopiju, vraćanje originala, provjeru s 13 istovremenih sesija i upozorenje kad nadogradnja drivera poništi patch.
   - testnu datoteku biraš iz biblioteke, a test se preko SSH-a izvodi **u Jellyfin kontejneru** s Jellyfinovim ffmpegom (NVDEC → `scale_cuda` → `h264_nvenc`)
   - broj istovremenih tokova raste korak po korak, uz praćenje brzine svakog toka te opterećenja ENC, DEC, GPU i VRAM

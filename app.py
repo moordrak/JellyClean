@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -949,7 +949,7 @@ import subprocess
 HEX32 = re.compile(r"^[0-9a-f]{32}$")
 
 
-HELPER_VERSION = 6
+HELPER_VERSION = 7
 
 # NVENC patch: keylase/nvidia-patch, zakucana provjerena verzija. Skripta se ne sprema u ovaj
 # repozitorij (nema licence za redistribuciju) - preuzima se s GitHuba i provjerava sha256 ovdje
@@ -1322,6 +1322,44 @@ op_nvverify() {
   ' _ "$n"
 }
 
+# ---- nadzor kartice uživo (isti NVML podaci koje prikazuje nvtop) ----
+op_gpumon() {
+  secs=${1:-300}
+  case "$secs" in ''|*[!0-9]*) echo "ERR neispravno trajanje"; return ;; esac
+  [ "$secs" -ge 5 ] && [ "$secs" -le 1800 ] || { echo "ERR trajanje 5-1800 s"; return; }
+  if command -v nvidia-smi >/dev/null 2>&1; then NS="nvidia-smi"; PSX=""
+  else jf_find_ctl; jf_exec_prefix; NS="$EX nvidia-smi"; PSX="$EX"; fi
+  $NS -L >/dev/null 2>&1 || { echo "ERR nvidia-smi nije dostupan na Jellyfin računalu"; return; }
+  echo "NAME $($NS --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | head -1)"
+  pm=1
+  end=$(( $(date +%s) + secs ))
+  while [ "$(date +%s)" -lt "$end" ]; do
+    echo "G $(date +%s),$($NS --query-gpu=utilization.gpu,utilization.encoder,utilization.decoder,memory.used,memory.total,temperature.gpu,power.draw,power.limit,fan.speed,clocks.gr,clocks.mem,pstate --format=csv,noheader,nounits 2>/dev/null | head -1)" || return
+    pids=""
+    if [ "$pm" = 1 ]; then
+      pmo=$($NS pmon -c 1 -s um 2>/dev/null)
+      if [ -n "$pmo" ]; then
+        printf '%s\n' "$pmo" | awk '/^# *gpu/ {sub(/^# */,""); print "PH " $0; next} /^#/ {next} NF>3 && $2 ~ /^[0-9]+$/ {print "P " $0}'
+        pids=$(printf '%s\n' "$pmo" | awk '!/^#/ && $2 ~ /^[0-9]+$/ {print $2}')
+      else pm=0; fi
+    fi
+    apps=$($NS --query-compute-apps=pid,used_memory --format=csv,noheader,nounits 2>/dev/null)
+    [ -n "$apps" ] && printf '%s\n' "$apps" | sed 's/^/M /'
+    pids="$pids $(printf '%s\n' "$apps" | cut -d, -f1)"
+    for x in $(printf '%s\n' $pids | sort -u); do
+      case "$x" in ''|*[!0-9]*) continue ;; esac
+      if [ -z "$PSX" ] && [ -r "/proc/$x/cmdline" ]; then
+        echo "C $x $(tr '\000\n' '\037 ' < "/proc/$x/cmdline" | cut -c1-600)"
+      else
+        echo "C $x $($PSX ps -o args= -p "$x" 2>/dev/null | head -1 | cut -c1-400)"
+      fi
+    done
+    echo "T"
+    [ "$pm" = 1 ] || sleep 1
+  done
+  echo "END"
+}
+
 main() {
   op=${1:-}; [ $# -gt 0 ] && shift
   case "$op" in
@@ -1339,6 +1377,7 @@ main() {
     nvstatus) op_nvstatus ;;
     nvpatch) op_nvpatch "$@" ;;
     nvverify) op_nvverify "$@" ;;
+    gpumon) op_gpumon "$@" ;;
     *) echo "ERR nepoznata operacija '$op'"; exit 2 ;;
   esac
 }
@@ -1382,7 +1421,7 @@ class JFConfig:
         return {"config": CFG["jf_config"], "cache": CFG["jf_cache"], "log": CFG["jf_log"],
                 "data": CFG["jf_data"], "metadata": CFG["jf_metadata"]}
 
-    def run(self, op, args=(), lines=None, timeout=600):
+    def _cmd(self, op, args=(), lines=None):
         if not self.enabled():
             raise SSHError("SSH pristup Jellyfinu nije podešen (JF_SSH_HOST, JF_CONFIG_PATH)")
         os.makedirs(os.path.join(CFG["data_dir"], "ssh"), exist_ok=True)
@@ -1401,6 +1440,44 @@ class JFConfig:
         else:
             cmd.append(("sudo -n " if CFG["ssh_sudo"] else "") + "sh -s")
             stdin = helper_script(standalone=False) + f"\nmain {argstr} <<'JC_EOF'\n{body}JC_EOF\n"
+        return cmd, stdin
+
+    def stream(self, op, args, on_line, stop_ev):
+        """Pokreće operaciju i predaje svaku liniju izlaza odmah (za nadzor uživo)."""
+        cmd, stdin = self._cmd(op, args)
+        try:
+            p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True, bufsize=1)
+        except FileNotFoundError:
+            raise SSHError("Naredba 'ssh' nije instalirana (apt install openssh-client)")
+        try:
+            try:
+                p.stdin.write(stdin)
+                p.stdin.close()
+            except BrokenPipeError:
+                pass
+            for line in p.stdout:
+                if stop_ev.is_set():
+                    break
+                line = line.rstrip("\n")
+                if line.startswith("ERR "):
+                    raise SSHError(line[4:])
+                on_line(line)
+        finally:
+            if p.poll() is None:
+                p.terminate()
+                try:
+                    p.wait(5)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+        err = (p.stderr.read() or "").strip() if p.stderr else ""
+        if p.returncode == 255 and not stop_ev.is_set():
+            raise SSHError("SSH spajanje nije uspjelo: " + (err or "nepoznata greška"))
+        if "sudo:" in err and ("password" in err or "not allowed" in err):
+            raise SSHError("sudo traži lozinku ili nije dopušten: " + err[:200])
+
+    def run(self, op, args=(), lines=None, timeout=600):
+        cmd, stdin = self._cmd(op, args, lines)
         try:
             p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=timeout)
         except FileNotFoundError:
@@ -2619,6 +2696,155 @@ NVP = NvPatch()
 
 
 # --------------------------------------------------------------------------
+# Nadzor kartice uživo (nvidia-smi / NVML - isti izvor kao nvtop)
+# --------------------------------------------------------------------------
+
+def _num(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+class GpuMon:
+    KEEP = 300          # uzoraka u povijesti
+    IDLE_STOP = 45      # s bez upita iz preglednika -> zaustavi
+    CHUNK = 600         # trajanje jednog SSH poziva
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.thread = None
+        self.stop_ev = threading.Event()
+        self.samples = []
+        self.procs = []
+        self.name = None
+        self.error = None
+        self.last_poll = 0
+        self.seq = 0
+        self._cur = None
+        self.err_t = 0
+
+    def poll(self, since=0):
+        self.last_poll = time.time()
+        if (JFC.enabled() and (self.thread is None or not self.thread.is_alive())
+                and not (self.error and time.time() - self.err_t < 30)):
+            self.stop_ev.clear()
+            self.error = None
+            self.thread = threading.Thread(target=self._run, daemon=True)
+            self.thread.start()
+        with self.lock:
+            return {"enabled": JFC.enabled(), "running": bool(self.thread and self.thread.is_alive()),
+                    "name": self.name, "error": self.error, "seq": self.seq,
+                    "samples": [x for x in self.samples if x["seq"] > since][-self.KEEP:],
+                    "procs": self.procs}
+
+    def stop(self):
+        self.stop_ev.set()
+        return {"ok": True}
+
+    def _on_line(self, line):
+        if time.time() - self.last_poll > self.IDLE_STOP:
+            self.stop_ev.set()
+            return
+        k, _, v = line.partition(" ")
+        cur = self._cur
+        if k == "NAME":
+            self.name = v.strip()
+        elif k == "G":
+            q = [x.strip() for x in v.split(",")]
+            q += [""] * (13 - len(q))
+            self._cur = {"t": int(_num(q[0]) or time.time()), "gpu": _num(q[1]), "enc": _num(q[2]), "dec": _num(q[3]),
+                         "mem": _num(q[4]), "mem_total": _num(q[5]), "temp": _num(q[6]), "power": _num(q[7]),
+                         "power_limit": _num(q[8]), "fan": _num(q[9]), "clk": _num(q[10]), "memclk": _num(q[11]),
+                         "pstate": q[12] or None, "_ph": None, "_p": {}, "_m": {}, "_c": {}}
+        elif cur is None:
+            return
+        elif k == "PH":
+            cur["_ph"] = v.split()
+        elif k == "P":
+            f = v.split()
+            hdr = cur["_ph"] or ["gpu", "pid", "type", "sm", "mem", "enc", "dec", "fb", "command"]
+            row = dict(zip(hdr, f))
+            if len(f) > len(hdr):
+                row["command"] = " ".join(f[len(hdr) - 1:])
+            if row.get("pid", "").isdigit():
+                cur["_p"][row["pid"]] = row
+        elif k == "M":
+            a, _, b = v.partition(",")
+            cur["_m"][a.strip()] = _num(b.strip())
+        elif k == "C":
+            pid, _, args = v.partition(" ")
+            cur["_c"][pid] = args.strip()
+        elif k == "T":
+            procs = []
+            for pid in sorted(set(cur["_p"]) | set(cur["_m"]), key=lambda x: int(x)):
+                r = cur["_p"].get(pid, {})
+                args = cur["_c"].get(pid, "")
+                fb = _num(r.get("fb"))
+                procs.append({"pid": int(pid), "type": r.get("type"), "sm": _num(r.get("sm")),
+                              "mem": _num(r.get("mem")), "enc": _num(r.get("enc")), "dec": _num(r.get("dec")),
+                              "vram": cur["_m"].get(pid, fb),
+                              "name": (r.get("command") or (re.split(r"[\x1f ]", args)[0] if args else "?")).split("/")[-1],
+                              **self._describe(args)})
+            smp = {k2: v2 for k2, v2 in cur.items() if not k2.startswith("_")}
+            with self.lock:
+                self.seq += 1
+                smp["seq"] = self.seq
+                self.samples.append(smp)
+                del self.samples[:-self.KEEP]
+                self.procs = procs
+            self._cur = None
+
+    @staticmethod
+    def _describe(args):
+        """Iz ffmpeg naredbe izvuci ulaznu datoteku, kodek i rezoluciju (za prikaz)."""
+        d = {"what": None, "input": None, "codec": None, "test": "jellyclean-enctest" in args}
+        if not args:
+            return d
+        if "\x1f" in args:
+            a = [x for x in args.split("\x1f") if x != ""]
+            args = " ".join(a)
+        else:
+            try:
+                a = shlex.split(args)
+            except ValueError:
+                a = args.split()
+        for i, x in enumerate(a[:-1]):
+            nx = a[i + 1]
+            if x == "-i" and not d["input"]:
+                d["input"] = nx.replace("file:", "").strip('"').rsplit("/", 1)[-1]
+            elif x in ("-c:v", "-codec:v", "-vcodec", "-c:v:0") and not d["codec"]:
+                d["codec"] = nx
+        m = re.search(r"scale(?:_cuda|_npp)?=(?:w=)?(-?\d+)[:x](?:h=)?(-?\d+)", args)
+        if m:
+            w, h = m.group(1), m.group(2)
+            d["what"] = f"{h}p" if w.startswith("-") else f"{w}×{h}"
+        if "lavfi" in args and "testsrc" in args:
+            d["input"] = "testni signal"
+        return d
+
+    def _run(self):
+        try:
+            while not self.stop_ev.is_set():
+                if time.time() - self.last_poll > self.IDLE_STOP:
+                    break
+                JFC.stream("gpumon", (self.CHUNK,), self._on_line, self.stop_ev)
+        except SSHError as e:
+            m = str(e)
+            if "nepoznata operacija" in m:
+                m = ("Pomoćni program na Jellyfin računalu je stariji od verzije " + str(HELPER_VERSION) +
+                     " i ne zna za nadzor uživo. Na Proxmox hostu pokreni update-lxc.sh (jednom traži sudo lozinku).")
+            self.error = m
+            self.err_t = time.time()
+        except Exception as e:
+            self.error = str(e)
+            self.err_t = time.time()
+
+
+GMON = GpuMon()
+
+
+# --------------------------------------------------------------------------
 # Pozadinski poslovi
 # --------------------------------------------------------------------------
 
@@ -2900,6 +3126,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"items": diag_episodes(re.sub(r"[^0-9a-fA-F-]", "", q.get("series", "")))})
             if u.path == "/api/enctest":
                 return self._send(200, ENC.get())
+            if u.path == "/api/gpumon":
+                try:
+                    since = int(q.get("since") or 0)
+                except ValueError:
+                    since = 0
+                return self._send(200, GMON.poll(since))
             if u.path == "/api/nvpatch":
                 return self._send(200, NVP.status())
             if u.path == "/api/enctest/item":
@@ -2972,6 +3204,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not CFG["allow_delete"]:
                     return self._send(403, {"error": "Izmjene su isključene (ALLOW_DELETE=false)"})
                 return self._send(200, NVP.apply(body.get("action")))
+            if u.path == "/api/gpumon/stop":
+                return self._send(200, GMON.stop())
             if u.path == "/api/nvpatch/verify":
                 return self._send(200, NVP.verify())
             if u.path == "/api/paths/cancel":
