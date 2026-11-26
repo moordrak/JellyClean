@@ -178,3 +178,16 @@ Koristi se zakucana, provjerena verzija skripte `patch.sh` iz keylase/nvidia-pat
 
 Patch se primjenjuje na računalu na kojem je instaliran NVIDIA driver (VM ili host s Dockerom). Ne radi kad je Jellyfin u LXC-u kojem driver dolazi s Proxmox hosta. Patch je neslužben i protivan NVIDIA licenci za GeForce kartice. Traži `ALLOW_DELETE=true`.
 
+## Više Jellyfin servera
+
+JellyClean može upravljati s više Jellyfin servera koji koriste **iste medije** (isti NAS):
+
+- **Glavni server** dolazi iz `/etc/jellyclean.env`, kako ga postavi instalacijska skripta.
+- **Ostale servere** dodaješ u sučelju, na kartici **Serveri → + Dodaj server**: naziv, URL, API ključ, PATH_MAP te SSH host i korisnik.
+- **Postavi pristup** daje jednu naredbu (`curl … | sudo sh`) koju pokreneš na računalu s Jellyfinom. Naredba dopusti JellyCleanovom SSH ključu prijavu, pronađe Jellyfin (Docker ili paket) i postavi pomoćni program sa sudo pravilom samo za njega. Poveznica vrijedi 30 minuta, a sudo lozinka se nigdje ne sprema. Ista naredba služi i za nadogradnju pomoćnog programa na tom računalu.
+- **Izbornik u zaglavlju** bira server za kartice Jellyfin, Provjera putanja, Jellyfin config i Test enkodiranja (uključujući nadzor kartice i NVENC patch).
+- Kartice Pregled, Preglednik, Najveće datoteke, Smeće i duplikati i Kanta su zajedničke, jer su mediji isti.
+- Nakon brisanja ili vraćanja datoteka JellyClean javlja promjenu **svim** serverima. Automatska sinkronizacija također obuhvaća sve servere.
+
+Postavke servera spremaju se u `DATA_DIR/servers.json` (prava 600). Stanje po serveru, kao rezultati testa enkodiranja i NVENC patcha, sprema se u `DATA_DIR/servers/<id>/`. Izmjene glavnog servera napravljene u sučelju imaju prednost pred env datotekom, a gumb **Vrati iz env** ih poništava.
+

@@ -152,6 +152,31 @@ header{gap:12px}
 .note{overflow-wrap:anywhere;min-width:0;max-width:100%}
 #et-file,#et-res{min-width:0;max-width:100%}
 .nvp-link{color:var(--accent,#00a4dc)}
+.srvsel{display:flex;align-items:center;gap:6px;margin-left:6px;font-size:12px;color:var(--muted)}
+.srvsel select,.svf input:not([type=checkbox]),.svf select{background:rgba(30,34,43,.85);border:1px solid var(--line);color:var(--text);padding:6px 9px;border-radius:7px;font:inherit}
+.srvsel select{max-width:170px;font-weight:600;padding:5px 8px}
+.srvsel span{display:none}
+@media (max-width:1560px){nav button{padding:7px 8px;font-size:13.5px}header{gap:10px}}
+@media (max-width:1320px){nav button{padding:6px 6px;font-size:13px}#btnScan .lbl{display:none}}
+.sv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:14px}
+.sv-card h3{display:flex;align-items:center;gap:8px;margin:0 0 4px;font-size:16px;text-transform:none;letter-spacing:0;color:var(--text)}
+.sv-card .kv{display:grid;grid-template-columns:110px 1fr;gap:4px 10px;font-size:13px;margin:10px 0}
+.sv-card .kv span:nth-child(odd){color:var(--muted)}
+.sv-card .kv span{min-width:0;overflow-wrap:anywhere}
+.sv-card .toolbar{margin:10px 0 0;flex-wrap:wrap}
+.sv-card.cur{border-color:var(--accent)}
+.svf fieldset{border:1px solid var(--line);border-radius:10px;padding:10px 12px 12px;margin:12px 0;display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+.svf legend{padding:0 6px;font-weight:600}
+.svf label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);min-width:0}
+.svf label input,.svf label select{width:100%;box-sizing:border-box}
+.svf label small{font-size:11px}
+.svf .w1{grid-column:span 1}.svf .w2{grid-column:span 2}.svf .w3{grid-column:span 3}.svf .w5{grid-column:span 5}.svf .w6{grid-column:1/-1}
+.svf .chk{flex-direction:row;align-items:center;align-self:end;padding-bottom:8px}
+.svf .chk input{width:auto}
+.svf-paths{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin-top:8px}
+@media (max-width:760px){.svf fieldset{grid-template-columns:1fr}.svf .w1,.svf .w2,.svf .w3,.svf .w5{grid-column:1/-1}}
+.svb-cmd{display:flex;gap:8px;align-items:stretch;margin:8px 0}
+.svb-cmd code{flex:1;background:rgba(0,0,0,.35);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12.5px;overflow-wrap:anywhere;font-family:var(--mono)}
 .gm-live{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
 .gm-live i{width:8px;height:8px;border-radius:50%;background:var(--muted)}
 .gm-live.on i{background:var(--ok);box-shadow:0 0 0 0 rgba(63,185,80,.6);animation:gmpulse 1.6s infinite}
@@ -182,6 +207,7 @@ header{gap:12px}
 <div class="bg" aria-hidden="true"><div class="grid-lines"></div><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div><i class="dot" style="left:6%;animation-duration:19s;animation-delay:-3s"></i><i class="dot" style="left:14%;animation-duration:27s;animation-delay:-11s"></i><i class="dot" style="left:23%;animation-duration:22s;animation-delay:-6s"></i><i class="dot" style="left:31%;animation-duration:31s;animation-delay:-17s"></i><i class="dot" style="left:42%;animation-duration:24s;animation-delay:-2s"></i><i class="dot" style="left:51%;animation-duration:29s;animation-delay:-14s"></i><i class="dot" style="left:60%;animation-duration:21s;animation-delay:-8s"></i><i class="dot" style="left:68%;animation-duration:33s;animation-delay:-20s"></i><i class="dot" style="left:77%;animation-duration:26s;animation-delay:-5s"></i><i class="dot" style="left:85%;animation-duration:23s;animation-delay:-12s"></i><i class="dot" style="left:93%;animation-duration:30s;animation-delay:-9s"></i></div>
 <header>
   <div class="brand"><h1><span>Jelly</span>Clean</h1><div class="ver" id="ver"></div></div>
+  <label class="srvsel" id="srvsel-wrap" title="Jellyfin server za kartice Jellyfin, Provjera putanja, Jellyfin config i Test enkodiranja" style="display:none"><span>Server</span><select id="srvsel"></select></label>
   <nav id="nav">
     <button data-tab="overview" class="active">Pregled</button>
     <button data-tab="browse">Preglednik</button>
@@ -192,10 +218,11 @@ header{gap:12px}
     <button data-tab="jfconfig">Jellyfin config</button>
     <button data-tab="enctest" title="Test paralelnog enkodiranja">Test enkodiranja</button>
     <button data-tab="trash">Kanta</button>
+    <button data-tab="servers">Serveri</button>
   </nav>
   <div class="spacer"></div>
   <span id="status"></span>
-  <button class="btn" id="btnScan">Skeniraj ponovno</button>
+  <button class="btn" id="btnScan" title="Skeniraj ponovno">↻<span class="lbl"> Skeniraj ponovno</span></button>
 </header>
 <main>
 
@@ -385,6 +412,13 @@ header{gap:12px}
   </div>
 </section>
 
+<!-- SERVERI -->
+<section class="tab" id="tab-servers">
+  <div class="tab-head"><h2>Jellyfin serveri</h2><p>Svi serveri koriste iste medije. Kartice Jellyfin, Provjera putanja, Jellyfin config i Test enkodiranja prikazuju server odabran u zaglavlju.</p></div>
+  <div class="toolbar"><button class="btn primary" id="sv-add">+ Dodaj server</button><span class="sub" id="sv-sum"></span></div>
+  <div id="sv-list" class="sv-grid"></div>
+</section>
+
 <!-- KANTA -->
 <section class="tab" id="tab-trash">
   <div class="tab-head"><h2>Kanta</h2><p>Obrisane stavke - vraćanje ili trajno brisanje</p></div>
@@ -419,6 +453,42 @@ header{gap:12px}
   <div id="dg-body" style="max-height:72vh;overflow:auto;margin-top:12px"></div>
 </dialog>
 
+<dialog id="svdlg" class="wide">
+  <div class="head" style="display:flex;align-items:center;gap:12px"><h3 id="svf-title" style="margin:0">Server</h3><button class="btn" id="svf-close" style="margin-left:auto">Zatvori ✕</button></div>
+  <form id="svf" class="svf" autocomplete="off" onsubmit="return false">
+    <input type="hidden" name="id">
+    <fieldset><legend>Jellyfin API</legend>
+      <label class="w2">Naziv <input name="name" required placeholder="npr. EliteDesk"></label>
+      <label class="w3">URL <input name="jf_url" placeholder="http://192.168.1.20:8096"></label>
+      <label class="w3">API ključ <input name="jf_key" type="password" placeholder="Nadzorna ploča → API ključevi"></label>
+      <label class="w3">Korisnici za „pogledali svi” <input name="jf_users" placeholder="prazno = svi korisnici"></label>
+      <label class="w5">PATH_MAP <input name="path_map" placeholder="/data/movies=/mnt/media/movies; /data/tv=/mnt/media/tv"><small>Putanja u Jellyfinu = putanja u JellyCleanu. Isti mediji, ali svaki Jellyfin ih može vidjeti pod drugom putanjom.</small></label>
+      <label class="w1 chk"><input type="checkbox" name="verify_tls" checked> provjeri TLS</label>
+    </fieldset>
+    <fieldset><legend>SSH pristup računalu s Jellyfinom <span class="sub">(za Jellyfin config, ispravak baze, test enkodiranja, nadzor kartice)</span></legend>
+      <label class="w3">Host <input name="ssh_host" placeholder="192.168.1.20 - prazno = bez SSH-a"></label>
+      <label class="w2">Korisnik <input name="ssh_user" placeholder="mrak"></label>
+      <label class="w1">Port <input name="ssh_port" placeholder="22"></label>
+      <label class="w3">Način <select name="ssh_mode"><option value="helper">pomoćni program (preporučeno)</option><option value="sudo">sudo bez lozinke</option><option value="direct">izravno (root)</option></select></label>
+      <details class="w6"><summary class="sub">Putanje na tom računalu (prazno = otkrij automatski)</summary>
+        <div class="svf-paths">
+          <label>config <input name="jf_config" placeholder="/opt/jellyfin/config"></label>
+          <label>cache <input name="jf_cache"></label>
+          <label>log <input name="jf_log"></label>
+          <label>data <input name="jf_data"></label>
+          <label>metadata <input name="jf_metadata"></label>
+        </div></details>
+    </fieldset>
+    <div id="svf-res"></div>
+    <div class="row"><button class="btn" type="button" id="svf-cancel">Odustani</button><button class="btn primary" type="button" id="svf-save">Spremi i provjeri vezu</button></div>
+  </form>
+</dialog>
+
+<dialog id="svboot" class="wide">
+  <div class="head" style="display:flex;align-items:center;gap:12px"><h3 style="margin:0">Postavljanje pristupa</h3><span class="sub" id="svb-sub"></span><button class="btn" id="svb-close" style="margin-left:auto">Zatvori ✕</button></div>
+  <div id="svb-body"></div>
+</dialog>
+
 <dialog id="dlg">
   <h3 id="dlg-title">Potvrda brisanja</h3>
   <div id="dlg-body"></div>
@@ -433,8 +503,10 @@ function fmt(b){ if(b==null) return '–'; const u=['B','KB','MB','GB','TB','PB'
 function fdate(ts){ if(!ts) return '–'; const d = typeof ts==='number'? new Date(ts*1000) : new Date(ts); if(isNaN(d)) return '–'; return d.toLocaleDateString('hr-HR'); }
 function ago(iso){ if(!iso) return null; return (Date.now()-new Date(iso).getTime())/86400000; }
 function toast(msg, err){ const t=document.createElement('div'); t.className='toast'+(err?' err':''); t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(), err?7000:3500); }
+let SRV=null; try{ SRV=localStorage.getItem('jc-srv'); }catch(e){}
 async function api(path, body){
-  const opt = body!==undefined ? {method:'POST', headers:{'Content-Type':'application/json','X-Requested-With':'JellyClean'}, body:JSON.stringify(body)} : {};
+  const opt = body!==undefined ? {method:'POST', headers:{'Content-Type':'application/json','X-Requested-With':'JellyClean'}, body:JSON.stringify(body)} : {headers:{}};
+  if(SRV) opt.headers['X-JC-Server']=SRV;
   const r = await fetch(path, opt); let j={}; try{ j = await r.json() }catch(e){}
   if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
   return j;
@@ -507,7 +579,7 @@ $$('#nav button').forEach(b=>b.onclick=()=>{
   current=b.dataset.tab; clearSel(); refreshCurrent();
 });
 function refreshCurrent(){
-  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash, jfconfig:()=>loadJc(false), paths:loadPc, enctest:()=>{ loadEt(); loadNvp(); gmStart(); }}[current]||(()=>{}))();
+  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash, jfconfig:()=>loadJc(false), paths:loadPc, enctest:()=>{ loadEt(); loadNvp(); gmStart(); }, servers:loadSv}[current]||(()=>{}))();
 }
 
 // ---------------- pregled ----------------
@@ -1035,6 +1107,119 @@ async function runDiag(id){
 
 // ---------------- test paralelnog enkodiranja ----------------
 let ET=null, ET_FILE=null, etTimer=null, etQTimer=null;
+// ---------------- Jellyfin serveri ----------------
+let SV=null;
+async function loadServers(){
+  try{ SV=await api('/api/servers'); }catch(e){ return; }
+  const ids=SV.servers.map(x=>x.id);
+  if(!SRV || !ids.includes(SRV)){ SRV=SV.current; }
+  const sel=$('#srvsel');
+  sel.innerHTML=SV.servers.map(x=>`<option value="${esc(x.id)}"${x.id===SRV?' selected':''}>${esc(x.name)}</option>`).join('');
+  $('#srvsel-wrap').style.display=SV.servers.length>1?'':'none';
+}
+$('#srvsel').onchange=e=>{
+  try{ localStorage.setItem('jc-srv', e.target.value); sessionStorage.setItem('jc-tab', current); }catch(x){}
+  location.reload();
+};
+function svCard(x){
+  const t=x._test||{}, cur=x.id===SRV;
+  const jf = !x.jf_url ? '<span class="pill">nije podešen</span>' : t.jf ? (t.jf.ok?`<span class="pill ok">radi</span> ${esc(t.jf.name||'')} ${esc(t.jf.version||'')}`:`<span class="pill bad">greška</span> ${esc(t.jf.error)}`)
+           : x.jf_error ? `<span class="pill bad">greška</span> ${esc(x.jf_error)}` : x.synced ? `<span class="pill ok">radi</span> ${esc(x.server_name||'')} ${esc(x.server_version||'')}` : '<span class="pill">provjeravam…</span>';
+  const mode={helper:'pomoćni program',sudo:'sudo bez lozinke',direct:'izravno'}[x.ssh_mode];
+  let ssh = !x.ssh_host ? '<span class="pill">bez SSH-a</span>' : `${esc(x.ssh_user)}@${esc(x.ssh_host)}${x.ssh_port!=='22'?':'+esc(x.ssh_port):''} · ${mode}`;
+  if(t.ssh) ssh += t.ssh.ok ? ` <span class="pill ok">radi</span>${t.ssh.helper_version?` <span class="sub">v${t.ssh.helper_version}</span>`:''}` : ` <span class="pill bad">ne radi</span>`;
+  const notes=[];
+  if(t.ssh && t.ssh.error) notes.push(`<div class="note warn" style="margin:8px 0 0">${esc(t.ssh.error)}${x.ssh_mode==='helper'?'<br>Ako pomoćni program još nije postavljen, klikni <b>Postavi pristup</b>.':''}</div>`);
+  if(t.ssh && t.ssh.warn) notes.push(`<div class="note warn" style="margin:8px 0 0">${esc(t.ssh.warn)}</div>`);
+  if(x.ssh_host && !x.jf_config && !(t.ssh&&t.ssh.ok)) notes.push('<div class="sub" style="margin-top:8px">Putanje Jellyfina još nisu poznate - klikni <b>Postavi pristup</b> ili <b>Provjeri vezu</b>.</div>');
+  return `<div class="card sv-card${cur?' cur':''}" data-sv="${esc(x.id)}">
+    <h3>${esc(x.name)} ${x.id===SV.main?'<span class="pill" title="Postavke iz /etc/jellyclean.env">glavni</span>':''}${cur?'<span class="pill ok">odabran</span>':''}</h3>
+    <div class="kv"><span>Jellyfin</span><span>${esc(x.jf_url||'–')}</span><span>API</span><span>${jf}</span>
+      <span>SSH</span><span>${ssh}</span><span>Config</span><span class="path">${esc(x.jf_config||'–')}</span>
+      ${x.path_map?`<span>PATH_MAP</span><span class="path">${esc(x.path_map)}</span>`:''}</div>
+    ${notes.join('')}
+    <div class="toolbar">
+      ${cur?'':`<button class="btn" data-svact="use">Odaberi</button>`}
+      <button class="btn" data-svact="edit">Uredi</button>
+      <button class="btn" data-svact="test">Provjeri vezu</button>
+      ${x.ssh_host?`<button class="btn" data-svact="boot">Postavi pristup</button>`:''}
+      ${x.id===SV.main && SV.main_override?`<button class="btn" data-svact="reset" title="Vrati postavke iz /etc/jellyclean.env">Vrati iz env</button>`:''}
+      ${x.id!==SV.main?`<button class="btn danger" data-svact="del">Ukloni</button>`:''}
+    </div></div>`;
+}
+const SV_TEST={};
+async function loadSv(){
+  await loadServers(); if(!SV) return;
+  SV.servers.forEach(x=>x._test=SV_TEST[x.id]);
+  $('#sv-list').innerHTML=SV.servers.map(svCard).join('');
+  $('#sv-sum').textContent=`${SV.servers.length} ${SV.servers.length===1?'server':'servera'}`;
+}
+$('#sv-list').addEventListener('click', async e=>{
+  const b=e.target.closest('[data-svact]'); if(!b) return;
+  const id=b.closest('[data-sv]').dataset.sv, x=SV.servers.find(s=>s.id===id), a=b.dataset.svact;
+  if(a==='use'){ try{ localStorage.setItem('jc-srv',id); sessionStorage.setItem('jc-tab','servers'); }catch(e){} location.reload(); }
+  if(a==='edit') svForm(x);
+  if(a==='test'){ b.disabled=true; b.textContent='Provjeravam…'; try{ const r=await api('/api/servers/test',{id}); SV_TEST[id]=r.test; }catch(e){ toast(e.message,true); } loadSv(); }
+  if(a==='boot') svBoot(id);
+  if(a==='del'){ if(!confirm(`Ukloniti server "${x.name}" iz JellyCleana?\n\nNa samom serveru ništa se ne mijenja (pomoćni program i SSH ključ ostaju dok ih ne ukloniš).`)) return;
+    try{ await api('/api/servers/delete',{id}); if(SRV===id){ try{ localStorage.removeItem('jc-srv'); }catch(e){} SRV=null; } toast('Server uklonjen'); loadSv(); }catch(e){ toast(e.message,true); } }
+  if(a==='reset'){ if(!confirm('Vratiti postavke glavnog servera iz /etc/jellyclean.env? Izmjene napravljene u sučelju bit će odbačene.')) return;
+    try{ await api('/api/servers/reset-main',{id}); delete SV_TEST[id]; loadSv(); }catch(e){ toast(e.message,true); } }
+});
+function svForm(x){
+  const f=$('#svf'); f.reset();
+  $('#svf-title').textContent=x?`Uredi: ${x.name}`:'Novi Jellyfin server';
+  $('#svf-res').innerHTML='';
+  const v=x||{ssh_mode:'helper',ssh_port:'22',verify_tls:true};
+  for(const el of f.elements){ if(!el.name) continue;
+    if(el.type==='checkbox') el.checked=!!v[el.name];
+    else if(el.name==='jf_key') el.placeholder = x&&x.has_key ? 'spremljen - prazno = ne mijenjaj' : 'Nadzorna ploča → API ključevi';
+    else el.value = v[el.name]!=null ? v[el.name] : '';
+  }
+  if(x && x.id===SV.main) $('#svf-title').textContent+=' (izmjene imaju prednost pred /etc/jellyclean.env)';
+  $('#svdlg').showModal();
+}
+$('#sv-add').onclick=()=>svForm(null);
+$('#svf-close').onclick=$('#svf-cancel').onclick=()=>$('#svdlg').close();
+$('#svf-save').onclick=async()=>{
+  const f=$('#svf'), body={};
+  for(const el of f.elements){ if(el.name) body[el.name]= el.type==='checkbox'?el.checked:el.value; }
+  const btn=$('#svf-save'); btn.disabled=true; btn.textContent='Spremam i provjeravam…';
+  try{
+    const r=await api('/api/servers/save',body); SV_TEST[r.server.id]=r.test;
+    $('#svdlg').close(); toast('Server spremljen'); await loadSv();
+    if(r.server.ssh_host && r.server.ssh_mode==='helper' && r.test && r.test.ssh && !r.test.ssh.ok) svBoot(r.server.id);
+  }catch(e){ $('#svf-res').innerHTML=`<div class="note warn">${esc(e.message)}</div>`; }
+  btn.disabled=false; btn.textContent='Spremi i provjeri vezu';
+};
+async function svBoot(id){
+  const x=SV.servers.find(s=>s.id===id);
+  $('#svb-sub').textContent=x?x.name:''; $('#svb-body').innerHTML='<div class="sub">Pripremam…</div>'; $('#svboot').showModal();
+  let r; try{ r=await api('/api/servers/bootstrap',{id}); }catch(e){ $('#svb-body').innerHTML=`<div class="note warn">${esc(e.message)}</div>`; return; }
+  $('#svb-body').innerHTML=`
+    <p>Na računalu <b>${esc(r.host)}</b> (gdje radi Jellyfin) pokreni jednu od ovih naredbi kao korisnik sa sudo pravom. Traži sudo lozinku jednom i ne sprema je.</p>
+    <div class="svb-cmd"><code id="svb-c1">${esc(r.command)}</code><button class="btn" data-copy="svb-c1">Kopiraj</button></div>
+    <div class="svb-cmd"><code id="svb-c2">${esc(r.wget)}</code><button class="btn" data-copy="svb-c2">Kopiraj</button></div>
+    <p class="sub">Skripta: (1) dopusti JellyCleanovom SSH ključu prijavu kao <b>${esc(r.user)}</b>, (2) pronađe Jellyfin (Docker ili paket) i njegove mape, (3) postavi pomoćni program <code>/usr/local/sbin/jellyclean-helper</code> i sudo pravilo samo za njega. Poveznica vrijedi ${r.expires_min} min. Istu naredbu pokreni i kad JellyClean javi da je pomoćni program zastario.
+      <a class="nvp-link" href="${esc(r.url)}" target="_blank" rel="noopener">Pogledaj skriptu</a></p>
+    <div class="row"><button class="btn primary" id="svb-test">Pokrenuo sam - provjeri vezu</button></div>
+    <div id="svb-res"></div>`;
+  $('#svb-test').onclick=async()=>{
+    const b=$('#svb-test'); b.disabled=true; b.textContent='Provjeravam…';
+    try{ const t=await api('/api/servers/test',{id}); SV_TEST[id]=t.test;
+      const ok=t.test.ssh&&t.test.ssh.ok;
+      $('#svb-res').innerHTML= ok ? `<div class="note" style="margin-top:10px"><b>Veza radi.</b> Pomoćni program v${t.test.ssh.helper_version||'?'}, config: <span class="path">${esc(t.server.jf_config||'?')}</span></div>`
+        : `<div class="note warn" style="margin-top:10px">${esc((t.test.ssh&&t.test.ssh.error)||'SSH nije podešen')}</div>`;
+      loadSv();
+    }catch(e){ $('#svb-res').innerHTML=`<div class="note warn">${esc(e.message)}</div>`; }
+    b.disabled=false; b.textContent='Pokrenuo sam - provjeri vezu';
+  };
+}
+$('#svb-close').onclick=()=>$('#svboot').close();
+$('#svboot').addEventListener('click',e=>{ const c=e.target.closest('[data-copy]'); if(!c) return;
+  const t=$('#'+c.dataset.copy).textContent;
+  (navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(()=>toast('Kopirano'),()=>{ const r=document.createRange(); r.selectNodeContents($('#'+c.dataset.copy)); const s=getSelection(); s.removeAllRanges(); s.addRange(r); toast('Označeno - kopiraj s Ctrl+C'); });
+});
 // ---------------- nadzor kartice uživo ----------------
 const GM={buf:[], seq:0, timer:null, paused:false, busy:false};
 function gmStart(){ if(GM.timer) return; GM.timer=setInterval(gmTick,1000); gmTick(); }
@@ -1254,6 +1439,7 @@ function renderEt(){
 }
 
 // ---------------- start ----------------
+loadServers().then(()=>{ let t=null; try{ t=sessionStorage.getItem('jc-tab'); sessionStorage.removeItem('jc-tab'); }catch(e){} if(t && t!=='overview') goTab(t); });
 pollScan();
 setInterval(()=>{ if(!OV || (!OV.scan.running && !OV.jellyfin.running)) loadOverview(); }, 60000);
 </script>

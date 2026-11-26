@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "1.8.0"
+APP_VERSION = "2.0.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -62,7 +62,7 @@ def _parse_map(value):
     return out
 
 
-CFG = {
+_GCFG = {
     "port": int(_env("PORT", "8095")),
     "bind": _env("BIND", "0.0.0.0"),
     "media": _parse_labeled(_env("MEDIA_PATHS", "/media")),
@@ -93,14 +93,102 @@ CFG = {
     "jf_data": _env("JF_DATA_PATH").rstrip("/"),
     "jf_metadata": _env("JF_METADATA_PATH").rstrip("/"),
 }
-if CFG["jf_config"]:
-    CFG["jf_cache"] = CFG["jf_cache"] or CFG["jf_config"] + "/cache"
-    CFG["jf_log"] = CFG["jf_log"] or CFG["jf_config"] + "/log"
-    CFG["jf_data"] = CFG["jf_data"] or CFG["jf_config"] + "/data"
-if CFG["jf_data"]:
-    CFG["jf_metadata"] = CFG["jf_metadata"] or CFG["jf_data"] + "/metadata"
-if not CFG["ssh_key"]:
-    CFG["ssh_key"] = os.path.join(CFG["data_dir"], "ssh", "id_ed25519")
+if not _GCFG["ssh_key"]:
+    _GCFG["ssh_key"] = os.path.join(_GCFG["data_dir"], "ssh", "id_ed25519")
+
+# ---- više Jellyfin servera ----
+# Ključevi koji pripadaju pojedinom Jellyfin serveru. Sve ostalo (mediji, kanta, prijava...) je zajedničko.
+SRV_KEYS = ("jf_url", "jf_key", "jf_users", "path_map", "verify_tls", "ssh_host", "ssh_user", "ssh_port",
+            "ssh_sudo", "ssh_helper", "jf_config", "jf_cache", "jf_log", "jf_data", "jf_metadata")
+_CUR = threading.local()
+
+
+def srv_normalize(c):
+    c["jf_url"] = (c.get("jf_url") or "").strip().rstrip("/")
+    c["jf_key"] = (c.get("jf_key") or "").strip()
+    for k in ("jf_config", "jf_cache", "jf_log", "jf_data", "jf_metadata"):
+        c[k] = (c.get(k) or "").strip().rstrip("/")
+    if c["jf_config"]:
+        c["jf_cache"] = c["jf_cache"] or c["jf_config"] + "/cache"
+        c["jf_log"] = c["jf_log"] or c["jf_config"] + "/log"
+        c["jf_data"] = c["jf_data"] or c["jf_config"] + "/data"
+    if c["jf_data"]:
+        c["jf_metadata"] = c["jf_metadata"] or c["jf_data"] + "/metadata"
+    c["ssh_port"] = str(c.get("ssh_port") or "22")
+    c["ssh_user"] = (c.get("ssh_user") or "root").strip()
+    c["ssh_host"] = (c.get("ssh_host") or "").strip()
+    c["ssh_helper"] = (c.get("ssh_helper") or "").strip()
+    c["ssh_sudo"] = bool(c.get("ssh_sudo"))
+    c["verify_tls"] = bool(c.get("verify_tls", True))
+    c["jf_users"] = [u.strip().lower() for u in (c.get("jf_users") or []) if str(u).strip()]
+    c["path_map"] = [tuple(x) for x in (c.get("path_map") or [])]
+    return c
+
+
+ENV_SRV = srv_normalize({k: _GCFG.pop(k) for k in SRV_KEYS})
+
+
+class _CfgView(dict):
+    """CFG: ključevi servera čitaju se iz servera koji obrađuje trenutni zahtjev ili dretvu."""
+    def __getitem__(self, k):
+        if k in SRV_KEYS:
+            return cur_server().cfg[k]
+        return dict.__getitem__(self, k)
+
+    def __setitem__(self, k, v):
+        if k in SRV_KEYS:
+            cur_server().cfg[k] = v
+        else:
+            dict.__setitem__(self, k, v)
+
+    def get(self, k, d=None):
+        try:
+            return self[k]
+        except KeyError:
+            return d
+
+
+CFG = _CfgView(_GCFG)
+
+
+def cur_server():
+    s = getattr(_CUR, "srv", None)
+    return s if s is not None else SERVERS.default()
+
+
+class use_server:
+    def __init__(self, srv):
+        self.srv = srv
+
+    def __enter__(self):
+        self.prev = getattr(_CUR, "srv", None)
+        _CUR.srv = self.srv
+        return self.srv
+
+    def __exit__(self, *a):
+        _CUR.srv = self.prev
+
+
+class CtxThread(threading.Thread):
+    """Dretva koja nasljeđuje server iz kojeg je pokrenuta."""
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._jc_srv = getattr(_CUR, "srv", None)
+
+    def run(self):
+        _CUR.srv = self._jc_srv
+        super().run()
+
+
+class _SrvProxy:
+    def __init__(self, attr):
+        object.__setattr__(self, "_attr", attr)
+
+    def __getattr__(self, n):
+        return getattr(getattr(cur_server(), self._attr), n)
+
+    def __setattr__(self, n, v):
+        setattr(getattr(cur_server(), self._attr), n, v)
 
 VIDEO_EXT = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv", ".ts", ".m2ts", ".mpg",
              ".mpeg", ".webm", ".flv", ".iso", ".vob", ".divx", ".3gp", ".ogm"}
@@ -366,7 +454,7 @@ def run_scan():
 def start_scan_bg():
     if SCAN.running:
         return False
-    threading.Thread(target=run_scan, daemon=True).start()
+    CtxThread(target=run_scan, daemon=True).start()
     return True
 
 
@@ -520,8 +608,7 @@ def delete_paths(paths, permanent=False, dry_run=False):
                     tdir = os.path.join(info["path"], CFG["trash_name"])
                     info["trash_size"] = tree_size(tdir) if os.path.isdir(tdir) else 0
         refresh_disks()
-        if JF.enabled():
-            threading.Thread(target=JF.library_refresh, daemon=True).start()
+        refresh_all_libraries()
     return results
 
 
@@ -601,8 +688,7 @@ def trash_restore(path):
             shutil.move(rp, dest)
             _cleanup_empty_parents(os.path.dirname(rp), tdir)
             start_scan_bg()
-            if JF.enabled():
-                threading.Thread(target=JF.library_refresh, daemon=True).start()
+            refresh_all_libraries()
             return dest
     raise DeleteError("Putanja nije u kanti")
 
@@ -902,7 +988,7 @@ class Jellyfin:
         return out
 
 
-JF = Jellyfin()
+JF = _SrvProxy("jf")
 
 
 def item_file_targets(path, whole_dir):
@@ -943,13 +1029,14 @@ def item_file_targets(path, whole_dir):
 # Jellyfin config mapa preko SSH-a (cache, slike, logovi, metadata)
 # --------------------------------------------------------------------------
 
+import secrets
 import shlex
 import subprocess
 
 HEX32 = re.compile(r"^[0-9a-f]{32}$")
 
 
-HELPER_VERSION = 9
+HELPER_VERSION = 10
 
 # NVENC patch: keylase/nvidia-patch, zakucana provjerena verzija. Skripta se ne sprema u ovaj
 # repozitorij (nema licence za redistribuciju) - preuzima se s GitHuba i provjerava sha256 ovdje
@@ -1369,6 +1456,35 @@ op_gpumon() {
   echo "END"
 }
 
+# ---- putanje zapečene u ovom pomoćnom programu i otkrivanje Jellyfina ----
+op_paths() {
+  echo "P_CONFIG $C"; echo "P_CACHE $CACHE"; echo "P_LOG $LOG"; echo "P_DATA $DATA"; echo "P_META $META"
+}
+op_detect() {
+  found=0
+  if command -v docker >/dev/null 2>&1; then
+    docker ps >/dev/null 2>&1 || echo "DOCKERPERM"
+    for id in $(docker ps -a --format '{{.ID}} {{.Image}} {{.Names}}' 2>/dev/null | grep -i jellyfin | awk '{print $1}'); do
+      name=$(docker inspect -f '{{.Name}}' "$id" | sed 's#^/##'); img=$(docker inspect -f '{{.Config.Image}}' "$id")
+      cfg=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/config"}}{{.Source}}{{end}}{{end}}' "$id")
+      cch=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/cache"}}{{.Source}}{{end}}{{end}}' "$id")
+      [ -n "$cfg" ] || continue
+      found=1
+      echo "D_SRC docker:$name ($img)"
+      echo "D_CONFIG $cfg"
+      if [ -d "$cfg/data/metadata" ]; then echo "D_DATA $cfg/data"; elif [ -d "$cfg/metadata" ]; then echo "D_DATA $cfg"; else echo "D_DATA $cfg/data"; fi
+      if [ -n "$cch" ]; then echo "D_CACHE $cch"; else echo "D_CACHE $cfg/cache"; fi
+      echo "D_LOG $cfg/log"
+      break
+    done
+  fi
+  if [ $found = 0 ] && [ -d /var/lib/jellyfin ]; then
+    echo "D_SRC paket (systemd)"; echo "D_CONFIG /var/lib/jellyfin"; echo "D_DATA /var/lib/jellyfin"
+    echo "D_CACHE /var/cache/jellyfin"; echo "D_LOG /var/log/jellyfin"; found=1
+  fi
+  [ $found = 1 ] || echo "D_NONE"
+}
+
 main() {
   op=${1:-}; [ $# -gt 0 ] && shift
   case "$op" in
@@ -1387,6 +1503,8 @@ main() {
     nvpatch) op_nvpatch "$@" ;;
     nvverify) op_nvverify "$@" ;;
     gpumon) op_gpumon "$@" ;;
+    paths) op_paths ;;
+    detect) op_detect ;;
     *) echo "ERR nepoznata operacija '$op'"; exit 2 ;;
   esac
 }
@@ -1404,6 +1522,107 @@ def helper_script(standalone=True):
             f"DATA={q(CFG['jf_data'])}\nMETA={q(CFG['jf_metadata'])}\n")
     body = HELPER_BODY.replace("__HVER__", str(HELPER_VERSION)).replace("__NVPSHA__", " ".join(NVPATCH_SHA256))
     return head + body + ('main "$@"\n' if standalone else "")
+
+
+# --------------------------------------------------------------------------
+# Postavljanje novog Jellyfin servera: jednokratna skripta koju korisnik pokrene kao root
+# (ključ za SSH, otkrivanje Jellyfina, pomoćni program i sudoers pravilo)
+# --------------------------------------------------------------------------
+
+BOOT_TOKENS = {}   # token -> (server_id, istek)
+
+
+def ssh_pubkey():
+    key = _GCFG["ssh_key"]
+    if not os.path.exists(key):
+        os.makedirs(os.path.dirname(key), exist_ok=True)
+        r = subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "jellyclean", "-f", key],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise SSHError("SSH ključ se ne može napraviti: " + (r.stderr or "").strip()[:200])
+    try:
+        with open(key + ".pub", encoding="utf-8") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        r = subprocess.run(["ssh-keygen", "-y", "-f", key], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise SSHError("Javni SSH ključ se ne može pročitati")
+        return r.stdout.strip()
+
+
+def boot_token(sid):
+    now = time.time()
+    for t, (_, exp) in list(BOOT_TOKENS.items()):
+        if exp < now:
+            BOOT_TOKENS.pop(t, None)
+    t = secrets.token_urlsafe(18)
+    BOOT_TOKENS[t] = (sid, now + 1800)
+    return t
+
+
+def bootstrap_script(sv):
+    c = sv.cfg
+    q = shlex.quote
+    body = HELPER_BODY.replace("__HVER__", str(HELPER_VERSION)).replace("__NVPSHA__", " ".join(NVPATCH_SHA256))
+    pub = ssh_pubkey()
+    return f"""#!/bin/sh
+# JellyClean {APP_VERSION} - postavljanje pristupa za Jellyfin server "{sv.name}"
+# Pokreni kao root na računalu na kojem radi Jellyfin:  curl -fsSL '<adresa>' | sudo sh
+set -u
+U={q(c["ssh_user"])}
+PUB={q(pub)}
+IN_C={q(c["jf_config"])}; IN_CACHE={q(c["jf_cache"])}; IN_LOG={q(c["jf_log"])}; IN_DATA={q(c["jf_data"])}; IN_META={q(c["jf_metadata"])}
+HP=/usr/local/sbin/jellyclean-helper
+say() {{ printf '\\033[1;36m==>\\033[0m %s\\n' "$*"; }}
+die() {{ printf '\\033[1;31mGREŠKA:\\033[0m %s\\n' "$*" >&2; exit 1; }}
+[ "$(id -u)" = 0 ] || die "pokreni kao root (… | sudo sh)"
+id "$U" >/dev/null 2>&1 || die "korisnik $U ne postoji na ovom računalu"
+
+say "1/3 SSH ključ JellyCleana za korisnika $U"
+H=$(getent passwd "$U" | cut -d: -f6); G=$(id -gn "$U")
+[ -n "$H" ] || die "korisnik $U nema home mapu"
+install -d -m 700 -o "$U" -g "$G" "$H/.ssh"
+touch "$H/.ssh/authorized_keys"
+grep -qxF "$PUB" "$H/.ssh/authorized_keys" || printf '%s\\n' "$PUB" >> "$H/.ssh/authorized_keys"
+chown "$U:$G" "$H/.ssh/authorized_keys"; chmod 600 "$H/.ssh/authorized_keys"
+
+say "2/3 Tražim Jellyfin"
+T=$(mktemp -d) || die "mktemp"
+trap 'rm -rf "$T"' EXIT
+cat > "$T/body.sh" <<'JC_HELPER_BODY'
+{body}
+JC_HELPER_BODY
+DET=$( (echo 'C=; CACHE=; LOG=; DATA=; META='; cat "$T/body.sh"; echo 'main detect') | sh 2>/dev/null )
+gv() {{ printf '%s\\n' "$DET" | sed -n "s/^$1 //p" | head -1; }}
+C=${{IN_C:-$(gv D_CONFIG)}}; DATA=${{IN_DATA:-$(gv D_DATA)}}; CACHE=${{IN_CACHE:-$(gv D_CACHE)}}; LOG=${{IN_LOG:-$(gv D_LOG)}}
+META=${{IN_META:-${{DATA:+$DATA/metadata}}}}
+[ -n "$C" ] || die "Jellyfin nije pronađen (ni Docker kontejner ni paket). Upiši putanje u JellyCleanu pa pokreni ponovno."
+for x in "$C" "$CACHE" "$LOG" "$DATA" "$META"; do case "$x" in *"'"*|*..*|"") die "neispravna putanja: $x";; /*) ;; *) die "putanja nije apsolutna: $x";; esac; done
+echo "    izvor:    $(gv D_SRC)"
+echo "    config:   $C"; echo "    cache:    $CACHE"; echo "    logovi:   $LOG"; echo "    data:     $DATA"; echo "    metadata: $META"
+
+if [ "$U" = root ]; then
+  say "3/3 Korisnik je root - pomoćni program nije potreban"
+  echo "JC_MODE direct"
+else
+  say "3/3 Pomoćni program $HP i sudoers pravilo"
+  command -v sudo >/dev/null 2>&1 || die "sudo nije instaliran (apt install sudo)"
+  command -v visudo >/dev/null 2>&1 || die "visudo nije pronađen"
+  {{ printf '#!/bin/sh\\n# JellyClean helper - generirano. Dopušta SAMO mjerenje i čišćenje Jellyfin\\n'
+     printf '# cachea, logova i siročadi u metadata/library unutar ovih putanja, test\\n'
+     printf '# enkodiranja, nadzor kartice i NVENC patch (samo odobrene verzije skripte):\\n'
+     printf "C='%s'\\nCACHE='%s'\\nLOG='%s'\\nDATA='%s'\\nMETA='%s'\\n" "$C" "$CACHE" "$LOG" "$DATA" "$META"
+     cat "$T/body.sh"; printf 'main "$@"\\n'; }} > "$HP.new"
+  chown root:root "$HP.new"; chmod 755 "$HP.new"; mv -f "$HP.new" "$HP"
+  printf '%s\\n' "# JellyClean: $U smije bez lozinke pokretati SAMO jellyclean-helper" "$U ALL=(root) NOPASSWD: $HP" > /etc/sudoers.d/jellyclean.new
+  chmod 440 /etc/sudoers.d/jellyclean.new
+  if visudo -cf /etc/sudoers.d/jellyclean.new >/dev/null; then mv -f /etc/sudoers.d/jellyclean.new /etc/sudoers.d/jellyclean
+  else rm -f /etc/sudoers.d/jellyclean.new; die "sudoers pravilo nije ispravno"; fi
+  su -s /bin/sh "$U" -c "sudo -n $HP version" >/dev/null 2>&1 || die "provjera 'sudo -n $HP' kao $U nije uspjela"
+  echo "JC_MODE helper"
+fi
+say "Gotovo. U JellyCleanu klikni 'Provjeri vezu' za ovaj server."
+"""
 
 
 class SSHError(Exception):
@@ -1430,8 +1649,8 @@ class JFConfig:
         return {"config": CFG["jf_config"], "cache": CFG["jf_cache"], "log": CFG["jf_log"],
                 "data": CFG["jf_data"], "metadata": CFG["jf_metadata"]}
 
-    def _cmd(self, op, args=(), lines=None):
-        if not self.enabled():
+    def _cmd(self, op, args=(), lines=None, force=False):
+        if not (self.enabled() or (force and CFG["ssh_host"])):
             raise SSHError("SSH pristup Jellyfinu nije podešen (JF_SSH_HOST, JF_CONFIG_PATH)")
         os.makedirs(os.path.join(CFG["data_dir"], "ssh"), exist_ok=True)
         kh = os.path.join(CFG["data_dir"], "ssh", "known_hosts")
@@ -1485,8 +1704,8 @@ class JFConfig:
         if "sudo:" in err and ("password" in err or "not allowed" in err):
             raise SSHError("sudo traži lozinku ili nije dopušten: " + err[:200])
 
-    def run(self, op, args=(), lines=None, timeout=600):
-        cmd, stdin = self._cmd(op, args, lines)
+    def run(self, op, args=(), lines=None, timeout=600, force=False):
+        cmd, stdin = self._cmd(op, args, lines, force=force)
         try:
             p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=timeout)
         except FileNotFoundError:
@@ -1582,7 +1801,7 @@ class JFConfig:
                 res["done"] = True
         if not dry_run:
             log(f"Jellyfin config: {action} (>{days} d) obrisano {res['count']} datoteka, {res['size']} B")
-            threading.Thread(target=self._safe_refresh, daemon=True).start()
+            CtxThread(target=self._safe_refresh, daemon=True).start()
         return res
 
     def _safe_refresh(self):
@@ -1679,11 +1898,11 @@ class JFConfig:
                 self.orphans["orphans"] = [o for o in self.orphans["orphans"] if o["id"] not in gone]
                 self.orphans["orphan_size"] = sum(o["size"] for o in self.orphans["orphans"])
         log(f"Jellyfin metadata: obrisano {n} mapa siročadi")
-        threading.Thread(target=self._safe_refresh, daemon=True).start()
+        CtxThread(target=self._safe_refresh, daemon=True).start()
         return {"deleted": n, "freed": freed}
 
 
-JFC = JFConfig()
+JFC = _SrvProxy("jfc")
 
 
 # --------------------------------------------------------------------------
@@ -2006,11 +2225,11 @@ class PathCheck:
                 res["warnings"].append(line[5:])
         if not dry_run:
             log(f"Provjera putanja: ispravljeno u bazi {res['updated']} zapisa, kopija {res['backup']}")
-            threading.Thread(target=lambda: (time.sleep(30), self.run()), daemon=True).start()
+            CtxThread(target=lambda: (time.sleep(30), self.run()), daemon=True).start()
         return res
 
 
-PC = PathCheck()
+PC = _SrvProxy("pc")
 
 
 # --------------------------------------------------------------------------
@@ -2282,7 +2501,7 @@ class EncTest:
         self.running = False
         self.cancel_ev = threading.Event()
         self.state = None
-        self.path = os.path.join(CFG["data_dir"], "enctest.json")
+        self.path = os.path.join(cur_server().data_dir, "enctest.json")
         try:
             with open(self.path, encoding="utf-8") as f:
                 self.state = json.load(f)
@@ -2291,7 +2510,7 @@ class EncTest:
 
     def _save(self):
         try:
-            os.makedirs(CFG["data_dir"], exist_ok=True)
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
             with open(self.path, "w", encoding="utf-8") as f:
                 json.dump(self.state, f, ensure_ascii=False)
         except Exception:
@@ -2357,13 +2576,13 @@ class EncTest:
             self.state = {"status": "running", "started": now_iso(), "finished": None, "file": info,
                           "params": {"max": max_n, "dur": dur, "mode": mode, "target": target, "codec": codec},
                           "gpu": None, "steps": [], "current": 0, "error": None, "conclusion": None}
-        threading.Thread(target=self._run, daemon=True).start()
+        CtxThread(target=self._run, daemon=True).start()
         return self.state
 
     def cancel(self):
         if self.running:
             self.cancel_ev.set()
-            threading.Thread(target=lambda: JFC.run("enckill", timeout=60), daemon=True).start()
+            CtxThread(target=lambda: JFC.run("enckill", timeout=60), daemon=True).start()
         return {"cancelling": self.running}
 
     def _run(self):
@@ -2469,7 +2688,7 @@ class EncTest:
                 "active": self.active_transcodes() if JF.enabled() else None}
 
 
-ENC = EncTest()
+ENC = _SrvProxy("enc")
 
 
 # --------------------------------------------------------------------------
@@ -2480,7 +2699,7 @@ class NvPatch:
     def __init__(self):
         self.lock = threading.Lock()
         self.busy = None
-        self.path = os.path.join(CFG["data_dir"], "nvpatch.json")
+        self.path = os.path.join(cur_server().data_dir, "nvpatch.json")
         try:
             with open(self.path, encoding="utf-8") as f:
                 self.state = json.load(f)
@@ -2489,7 +2708,7 @@ class NvPatch:
 
     def _save(self):
         try:
-            os.makedirs(CFG["data_dir"], exist_ok=True)
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
             with open(self.path, "w", encoding="utf-8") as f:
                 json.dump(self.state, f, ensure_ascii=False)
         except Exception:
@@ -2721,7 +2940,7 @@ class NvPatch:
             self.busy = None
 
 
-NVP = NvPatch()
+NVP = _SrvProxy("nvp")
 
 
 # --------------------------------------------------------------------------
@@ -2760,7 +2979,7 @@ class GpuMon:
                 and not (self.error and time.time() - self.err_t < 30)):
             self.stop_ev.clear()
             self.error = None
-            self.thread = threading.Thread(target=self._run, daemon=True)
+            self.thread = CtxThread(target=self._run, daemon=True)
             self.thread.start()
         with self.lock:
             return {"enabled": JFC.enabled(), "running": bool(self.thread and self.thread.is_alive()),
@@ -2876,12 +3095,283 @@ class GpuMon:
             self.err_t = time.time()
 
 
-GMON = GpuMon()
+GMON = _SrvProxy("gmon")
+
+
+# --------------------------------------------------------------------------
+# Registar Jellyfin servera
+# --------------------------------------------------------------------------
+
+def path_map_str(pm):
+    return "; ".join(f"{a}={b}" for a, b in pm)
+
+
+class Server:
+    def __init__(self, sid, name, cfg, data_dir):
+        self.id = sid
+        self.name = name or sid
+        self.cfg = srv_normalize(dict(cfg))
+        self.data_dir = data_dir
+        os.makedirs(data_dir, exist_ok=True)
+        with use_server(self):
+            self.jf = Jellyfin()
+            self.jfc = JFConfig()
+            self.pc = PathCheck()
+            self.enc = EncTest()
+            self.nvp = NvPatch()
+            self.gmon = GpuMon()
+
+    def public(self):
+        c = self.cfg
+        mode = "helper" if c["ssh_helper"] else ("sudo" if c["ssh_sudo"] else "direct")
+        return {"id": self.id, "name": self.name, "jf_url": c["jf_url"], "has_key": bool(c["jf_key"]),
+                "jf_users": ", ".join(c["jf_users"]), "path_map": path_map_str(c["path_map"]),
+                "verify_tls": c["verify_tls"], "ssh_host": c["ssh_host"], "ssh_user": c["ssh_user"],
+                "ssh_port": c["ssh_port"], "ssh_mode": mode, "ssh_helper": c["ssh_helper"],
+                "jf_config": c["jf_config"], "jf_cache": c["jf_cache"], "jf_log": c["jf_log"],
+                "jf_data": c["jf_data"], "jf_metadata": c["jf_metadata"],
+                "jf_enabled": bool(c["jf_url"] and c["jf_key"]), "ssh_enabled": bool(c["ssh_host"] and c["jf_config"]),
+                "synced": self.jf.synced, "jf_error": self.jf.error,
+                "server_name": (self.jf.server or {}).get("name"), "server_version": (self.jf.server or {}).get("version")}
+
+
+class ServerRegistry:
+    MAIN = "main"
+
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.servers = {}
+        self.path = os.path.join(_GCFG["data_dir"], "servers.json")
+        self.main_override = False
+
+    def _read(self):
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+        except Exception as e:
+            log("servers.json se ne može pročitati:", e)
+            return {}
+
+    def load(self):
+        data = self._read()
+        entries = data.get("servers") or []
+        with self.lock:
+            self.servers = {}
+            m = next((e for e in entries if e.get("id") == self.MAIN), None)
+            mcfg = dict(ENV_SRV)
+            mname = (m or {}).get("name") or data.get("main_name") or "Jellyfin"
+            self.main_override = bool(m and m.get("override"))
+            if self.main_override:
+                mcfg.update({k: m[k] for k in SRV_KEYS if k in m})
+            self.servers[self.MAIN] = Server(self.MAIN, mname, mcfg, _GCFG["data_dir"])
+            for e in entries:
+                sid = e.get("id")
+                if not sid or sid == self.MAIN or not re.fullmatch(r"[a-z0-9-]{1,32}", sid):
+                    continue
+                self.servers[sid] = Server(sid, e.get("name"), {k: e[k] for k in SRV_KEYS if k in e},
+                                           os.path.join(_GCFG["data_dir"], "servers", sid))
+
+    def save(self):
+        out = []
+        with self.lock:
+            for sid, sv in self.servers.items():
+                e = {"id": sid, "name": sv.name}
+                if sid != self.MAIN or self.main_override:
+                    c = dict(sv.cfg)
+                    c["path_map"] = [list(x) for x in c["path_map"]]
+                    e.update(c)
+                    if sid == self.MAIN:
+                        e["override"] = True
+                out.append(e)
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        tmp = self.path + ".tmp"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
+            json.dump({"servers": out}, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, self.path)
+
+    def default(self):
+        with self.lock:
+            if not self.servers:
+                self.servers[self.MAIN] = Server(self.MAIN, "Jellyfin", dict(ENV_SRV), _GCFG["data_dir"])
+            return self.servers.get(self.MAIN) or next(iter(self.servers.values()))
+
+    def get(self, sid):
+        with self.lock:
+            return self.servers.get(sid) if sid else None
+
+    def all(self):
+        with self.lock:
+            return list(self.servers.values())
+
+    def upsert(self, body):
+        """Spremi server iz sučelja. Prazan API ključ = zadrži postojeći."""
+        sid = (body.get("id") or "").strip()
+        name = (body.get("name") or "").strip()[:60]
+        if not name:
+            raise ValueError("Upiši naziv servera")
+        cfg = {
+            "jf_url": (body.get("jf_url") or "").strip(),
+            "jf_key": (body.get("jf_key") or "").strip(),
+            "jf_users": [u for u in re.split(r"[,;]", body.get("jf_users") or "") if u.strip()],
+            "path_map": _parse_map(body.get("path_map") or ""),
+            "verify_tls": bool(body.get("verify_tls", True)),
+            "ssh_host": (body.get("ssh_host") or "").strip(),
+            "ssh_user": (body.get("ssh_user") or "").strip() or "root",
+            "ssh_port": str(body.get("ssh_port") or "22").strip(),
+            "ssh_sudo": body.get("ssh_mode") == "sudo",
+            "ssh_helper": ("/usr/local/sbin/jellyclean-helper" if body.get("ssh_mode") == "helper" else ""),
+            "jf_config": body.get("jf_config") or "", "jf_cache": body.get("jf_cache") or "",
+            "jf_log": body.get("jf_log") or "", "jf_data": body.get("jf_data") or "",
+            "jf_metadata": body.get("jf_metadata") or "",
+        }
+        if cfg["jf_url"] and not re.match(r"https?://", cfg["jf_url"]):
+            raise ValueError("Jellyfin URL mora počinjati s http:// ili https://")
+        if not re.fullmatch(r"\d{1,5}", cfg["ssh_port"]):
+            raise ValueError("Neispravan SSH port")
+        if cfg["ssh_host"] and not re.fullmatch(r"[A-Za-z0-9._:-]+", cfg["ssh_host"]):
+            raise ValueError("Neispravan SSH host")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", cfg["ssh_user"]):
+            raise ValueError("Neispravno SSH korisničko ime")
+        for k in ("jf_config", "jf_cache", "jf_log", "jf_data", "jf_metadata"):
+            v = (cfg[k] or "").strip()
+            if v and (not v.startswith("/") or ".." in v or not re.fullmatch(r"[^\x00-\x1f'\"`$\\]+", v)):
+                raise ValueError(f"Neispravna putanja: {v}")
+        with self.lock:
+            old = self.servers.get(sid) if sid else None
+            if old and not cfg["jf_key"]:
+                cfg["jf_key"] = old.cfg["jf_key"]
+            if not sid:
+                base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:24] or "server"
+                sid, i = base, 2
+                while sid in self.servers or sid == self.MAIN:
+                    sid, i = f"{base}-{i}", i + 1
+            if sid == self.MAIN:
+                self.main_override = True
+            if old:
+                old.name = name
+                old.cfg = srv_normalize(cfg)
+                old.jf.synced = None
+                old.jfc.status = None
+                sv = old
+            else:
+                sv = Server(sid, name, cfg, os.path.join(_GCFG["data_dir"], "servers", sid))
+                self.servers[sid] = sv
+            self.save()
+        return sv
+
+    def remove(self, sid):
+        with self.lock:
+            if sid == self.MAIN:
+                raise ValueError("Glavni server (iz /etc/jellyclean.env) ne može se ukloniti")
+            sv = self.servers.pop(sid, None)
+            if not sv:
+                raise ValueError("Server ne postoji")
+            sv.gmon.stop()
+            self.save()
+
+    def reset_main(self):
+        with self.lock:
+            self.main_override = False
+            m = self.servers[self.MAIN]
+            m.cfg = srv_normalize(dict(ENV_SRV))
+            m.jf.synced = None
+            self.save()
+
+
+SERVERS = ServerRegistry()
+
+
+def server_test(sv):
+    """Provjeri Jellyfin API i SSH za server; putanje i način rada preuzmi iz pomoćnog programa."""
+    out = {"jf": None, "ssh": None}
+    changed = False
+    with use_server(sv):
+        c = sv.cfg
+        if c["jf_url"] and c["jf_key"]:
+            try:
+                info = JF.req("GET", "/System/Info", timeout=15) or {}
+                out["jf"] = {"ok": True, "name": info.get("ServerName"), "version": info.get("Version")}
+            except urllib.error.HTTPError as e:
+                out["jf"] = {"ok": False, "error": f"HTTP {e.code}" + (" - API ključ nije ispravan" if e.code in (401, 403) else "")}
+            except Exception as e:
+                out["jf"] = {"ok": False, "error": str(e)[:200]}
+        if c["ssh_host"]:
+            r = {"ok": False}
+            try:
+                if not c["ssh_helper"] and c["ssh_user"] != "root" and not c["ssh_sudo"]:
+                    # možda je pomoćni program već postavljen (bootstrap skripta) - probaj ga
+                    c["ssh_helper"] = "/usr/local/sbin/jellyclean-helper"
+                    try:
+                        JFC.run("version", timeout=30, force=True)
+                        changed = True
+                    except SSHError:
+                        c["ssh_helper"] = ""
+                ver = JFC.run("version", timeout=30, force=True).strip().splitlines()
+                hv = next((x.split()[-1] for x in ver if x.strip()), "")
+                r["helper_version"] = int(hv) if hv.isdigit() else None
+                r["mode"] = "helper" if c["ssh_helper"] else ("sudo" if c["ssh_sudo"] else "direct")
+                if c["ssh_helper"]:
+                    txt = JFC.run("paths", timeout=30, force=True)
+                    m = dict(l.split(" ", 1) for l in txt.splitlines() if l.startswith("P_") and " " in l)
+                    newp = {"jf_config": m.get("P_CONFIG", ""), "jf_cache": m.get("P_CACHE", ""), "jf_log": m.get("P_LOG", ""),
+                            "jf_data": m.get("P_DATA", ""), "jf_metadata": m.get("P_META", "")}
+                    if newp["jf_config"] and any(c[k] != v for k, v in newp.items()):
+                        c.update(newp)
+                        changed = True
+                elif not c["jf_config"]:
+                    txt = JFC.run("detect", timeout=60, force=True)
+                    m = dict(l.split(" ", 1) for l in txt.splitlines() if l.startswith("D_") and " " in l)
+                    if m.get("D_CONFIG"):
+                        c.update({"jf_config": m["D_CONFIG"], "jf_cache": m.get("D_CACHE", ""), "jf_log": m.get("D_LOG", ""),
+                                  "jf_data": m.get("D_DATA", ""), "jf_metadata": ""})
+                        srv_normalize(c)
+                        changed = True
+                        r["detected"] = m.get("D_SRC")
+                    elif "DOCKERPERM" in txt:
+                        r["warn"] = f"{c['ssh_user']} nema pristup Dockeru - pokreni naredbu za postavljanje (pomoćni program)"
+                r["ok"] = True
+                r["paths"] = {k: c[k] for k in ("jf_config", "jf_cache", "jf_log", "jf_data", "jf_metadata")}
+                if r["helper_version"] is not None and r["helper_version"] < HELPER_VERSION:
+                    r["warn"] = (f"Pomoćni program je verzija {r['helper_version']}, a JellyClean očekuje {HELPER_VERSION}. "
+                                 "Ponovno pokreni naredbu za postavljanje na tom računalu.")
+            except SSHError as e:
+                r["error"] = str(e)[:300]
+            out["ssh"] = r
+    if changed:
+        if sv.id == SERVERS.MAIN:
+            SERVERS.main_override = True
+        SERVERS.save()
+        sv.jfc.status = None
+    return out
 
 
 # --------------------------------------------------------------------------
 # Pozadinski poslovi
 # --------------------------------------------------------------------------
+
+
+def sync_all_servers(background=False):
+    for sv in SERVERS.all():
+        with use_server(sv):
+            if not JF.enabled():
+                continue
+            if background:
+                CtxThread(target=JF.sync, daemon=True).start()
+            else:
+                try:
+                    JF.sync()
+                except Exception:
+                    traceback.print_exc()
+
+
+def refresh_all_libraries():
+    """Mediji su zajednički - nakon brisanja ili vraćanja javi svim Jellyfin serverima."""
+    for sv in SERVERS.all():
+        with use_server(sv):
+            if JF.enabled():
+                CtxThread(target=JF.library_refresh, daemon=True).start()
 
 
 def scheduler():
@@ -2893,7 +3383,7 @@ def scheduler():
             if CFG["scan_hours"] > 0 and time.time() - last_scan > CFG["scan_hours"] * 3600:
                 last_scan = time.time()
                 run_scan()
-                JF.sync()
+                sync_all_servers()
             if CFG["trash_days"] > 0 and time.time() - last_purge > 3600:
                 last_purge = time.time()
                 freed = trash_empty(older_than_days=CFG["trash_days"])
@@ -3106,7 +3596,37 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Prevelik zahtjev")
         return json.loads(self.rfile.read(n) or b"{}")
 
+    def _pick_server(self):
+        sid = self.headers.get("X-JC-Server") or ""
+        if not sid:
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            sid = (q.get("srv") or [""])[0]
+        _CUR.srv = SERVERS.get(sid) or SERVERS.default()
+
     def do_GET(self):
+        u = urllib.parse.urlparse(self.path)
+        if u.path == "/api/servers/bootstrap.sh":
+            t = (urllib.parse.parse_qs(u.query).get("t") or [""])[0]
+            ent = BOOT_TOKENS.get(t)
+            sv = SERVERS.get(ent[0]) if ent and ent[1] > time.time() else None
+            if not sv:
+                return self._send(403, "echo 'JellyClean: poveznica je istekla ili nije ispravna - napravi novu u sučelju' >&2; exit 1\n",
+                                  "text/x-shellscript; charset=utf-8")
+            return self._send(200, bootstrap_script(sv), "text/x-shellscript; charset=utf-8")
+        self._pick_server()
+        try:
+            return self._do_GET()
+        finally:
+            _CUR.srv = None
+
+    def do_POST(self):
+        self._pick_server()
+        try:
+            return self._do_POST()
+        finally:
+            _CUR.srv = None
+
+    def _do_GET(self):
         if not self._auth_ok():
             return self._deny()
         u = urllib.parse.urlparse(self.path)
@@ -3161,6 +3681,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"items": diag_episodes(re.sub(r"[^0-9a-fA-F-]", "", q.get("series", "")))})
             if u.path == "/api/enctest":
                 return self._send(200, ENC.get())
+            if u.path == "/api/servers":
+                try:
+                    pub = ssh_pubkey()
+                except Exception:
+                    pub = None
+                return self._send(200, {"servers": [x.public() for x in SERVERS.all()], "current": cur_server().id,
+                                        "main": SERVERS.MAIN, "main_override": SERVERS.main_override,
+                                        "pubkey": pub, "helper_version": HELPER_VERSION})
             if u.path == "/api/gpumon":
                 try:
                     since = int(q.get("since") or 0)
@@ -3182,7 +3710,7 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             return self._send(500, {"error": str(e)})
 
-    def do_POST(self):
+    def _do_POST(self):
         if not self._auth_ok():
             return self._deny()
         # Jednostavna CSRF zaštita: traži custom header koji forma s drugog sitea ne može poslati
@@ -3193,13 +3721,13 @@ class Handler(BaseHTTPRequestHandler):
             body = self._body()
             if u.path == "/api/scan":
                 started = start_scan_bg()
-                if body.get("jellyfin") and JF.enabled():
-                    threading.Thread(target=JF.sync, daemon=True).start()
+                if body.get("jellyfin"):
+                    sync_all_servers(background=True)
                 return self._send(200, {"started": started})
             if u.path == "/api/jellyfin/sync":
                 if not JF.enabled():
                     return self._send(400, {"error": "Jellyfin nije podešen"})
-                threading.Thread(target=JF.sync, daemon=True).start()
+                CtxThread(target=JF.sync, daemon=True).start()
                 return self._send(200, {"started": True})
             if u.path == "/api/delete":
                 paths = body.get("paths") or []
@@ -3216,14 +3744,14 @@ class Handler(BaseHTTPRequestHandler):
                                                      "(provjeri PATH_MAP)"})
                 res = delete_paths(targets, bool(body.get("permanent")), bool(body.get("dry_run")))
                 if not body.get("dry_run") and any(r["ok"] for r in res):
-                    threading.Thread(target=lambda: (time.sleep(20), JF.sync()), daemon=True).start()
+                    CtxThread(target=lambda: (time.sleep(20), JF.sync()), daemon=True).start()
                 return self._send(200, {"results": res, "trash": CFG["trash"] and not body.get("permanent")})
             if u.path == "/api/paths/check":
                 if not JF.enabled():
                     return self._send(400, {"error": "Jellyfin API nije podešen"})
                 if SCAN.running:
                     return self._send(409, {"error": "Skeniranje diska je u tijeku - pričekaj da završi"})
-                threading.Thread(target=PC.run, daemon=True).start()
+                CtxThread(target=PC.run, daemon=True).start()
                 return self._send(200, {"started": True})
             if u.path == "/api/diag":
                 return self._send(200, diagnose((body.get("id") or "").replace("-", "").lower()))
@@ -3240,6 +3768,37 @@ class Handler(BaseHTTPRequestHandler):
                 if not CFG["allow_delete"]:
                     return self._send(403, {"error": "Izmjene su isključene (ALLOW_DELETE=false)"})
                 return self._send(200, NVP.apply(body.get("action")))
+            if u.path.startswith("/api/servers/"):
+                act = u.path.rsplit("/", 1)[1]
+                if act == "save":
+                    sv = SERVERS.upsert(body)
+                    res = server_test(sv) if body.get("test", True) else None
+                    if sv.cfg["jf_url"] and sv.cfg["jf_key"]:
+                        with use_server(sv):
+                            CtxThread(target=JF.sync, daemon=True).start()
+                    return self._send(200, {"server": sv.public(), "test": res})
+                sv = SERVERS.get(body.get("id"))
+                if not sv:
+                    return self._send(404, {"error": "Server ne postoji"})
+                if act == "delete":
+                    SERVERS.remove(sv.id)
+                    return self._send(200, {"ok": True})
+                if act == "test":
+                    res = server_test(sv)
+                    return self._send(200, {"server": sv.public(), "test": res})
+                if act == "reset-main":
+                    SERVERS.reset_main()
+                    return self._send(200, {"server": SERVERS.default().public()})
+                if act == "bootstrap":
+                    if not sv.cfg["ssh_host"]:
+                        return self._send(400, {"error": "Prvo upiši SSH host i korisnika i spremi server"})
+                    t = boot_token(sv.id)
+                    host = self.headers.get("Host") or f"{CFG['bind']}:{CFG['port']}"
+                    url = f"http://{host}/api/servers/bootstrap.sh?t={t}"
+                    return self._send(200, {"url": url, "command": f"curl -fsSL '{url}' | sudo sh",
+                                            "wget": f"wget -qO- '{url}' | sudo sh", "expires_min": 30,
+                                            "user": sv.cfg["ssh_user"], "host": sv.cfg["ssh_host"]})
+                return self._send(404, {"error": "Nepoznata radnja"})
             if u.path == "/api/gpumon/stop":
                 return self._send(200, GMON.stop())
             if u.path == "/api/nvpatch/verify":
@@ -3280,7 +3839,7 @@ class Handler(BaseHTTPRequestHandler):
                 JF.req("POST", f"/ScheduledTasks/Running/{tid}")
                 return self._send(200, {"started": True})
             return self._send(404, {"error": "Nije pronađeno"})
-        except (DeleteError, SSHError) as e:
+        except (DeleteError, SSHError, ValueError) as e:
             return self._send(400, {"error": str(e)})
         except urllib.error.HTTPError as e:
             return self._send(502, {"error": f"Jellyfin HTTP {e.code}"})
@@ -3291,22 +3850,23 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     os.makedirs(CFG["data_dir"], exist_ok=True)
+    SERVERS.load()
     log(f"JellyClean {APP_VERSION} na http://{CFG['bind']}:{CFG['port']}")
     for l, p in CFG["media"]:
         log(f"  medij: {l} = {p}" + ("" if os.path.isdir(p) else "  (NE POSTOJI!)"))
     for l, p in CFG["jf_dirs"]:
         log(f"  jellyfin mapa: {l} = {p}" + ("" if os.path.isdir(p) else "  (NE POSTOJI!)"))
-    log("  Jellyfin API: " + (CFG["jf_url"] if JF.enabled() else "nije podešen"))
-    log("  Jellyfin config (SSH): " + (f"{CFG['ssh_user']}@{CFG['ssh_host']}:{CFG['jf_config']}"
-                                       if JFC.enabled() else "nije podešen"))
+    for sv in SERVERS.all():
+        with use_server(sv):
+            log(f"  Jellyfin server '{sv.name}' ({sv.id}): API " + (CFG["jf_url"] if JF.enabled() else "nije podešen") +
+                ", SSH " + (f"{CFG['ssh_user']}@{CFG['ssh_host']}:{CFG['jf_config']}" if JFC.enabled() else "nije podešen"))
     log(f"  brisanje: {'da' if CFG['allow_delete'] else 'NE'}, kanta: {'da' if CFG['trash'] else 'ne'}"
         f" ({CFG['trash_days']} dana)")
     if not CFG["auth_user"]:
         log("  UPOZORENJE: AUTH_USER nije postavljen - sučelje je bez lozinke")
     start_scan_bg()
-    if JF.enabled():
-        threading.Thread(target=JF.sync, daemon=True).start()
-    threading.Thread(target=scheduler, daemon=True).start()
+    sync_all_servers(background=True)
+    CtxThread(target=scheduler, daemon=True).start()
     srv = ThreadingHTTPServer((CFG["bind"], CFG["port"]), Handler)
     srv.daemon_threads = True
     try:
@@ -3318,8 +3878,12 @@ def main():
 if __name__ == "__main__":
     import sys
     if "--helper-script" in sys.argv:
-        if not CFG["jf_config"]:
-            sys.exit("JF_CONFIG_PATH nije postavljen")
-        sys.stdout.write(helper_script(standalone=True))
+        SERVERS.load()
+        sid = sys.argv[sys.argv.index("--server") + 1] if "--server" in sys.argv else SERVERS.MAIN
+        sv = SERVERS.get(sid) or sys.exit(f"Server {sid} ne postoji")
+        with use_server(sv):
+            if not CFG["jf_config"]:
+                sys.exit("JF_CONFIG_PATH nije postavljen")
+            sys.stdout.write(helper_script(standalone=True))
     else:
         main()
