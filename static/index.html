@@ -164,6 +164,12 @@ header{gap:12px}
 .gm-t small{display:block;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gm-t .bar{margin-top:5px;height:4px}
 .gm-chartwrap{position:relative}
+.gm-procbox{height:calc(36px * 11 + 2px);overflow:auto;margin-top:10px;border:1px solid var(--line);border-radius:8px}
+.gm-procbox table{margin:0!important}
+.gm-procbox thead th{position:sticky;top:0;z-index:1;background:var(--panel-solid)}
+.gm-procbox tr{height:36px}
+.gm-procbox td,.gm-procbox th{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-top:0;padding-bottom:0}
+.gm-procbox .gm-empty{height:calc(36px * 10);display:flex;align-items:center;justify-content:center}
 #gm-chart{width:100%;display:block}
 .gm-legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;margin-top:4px}
 .gm-legend span[style]::before{content:"";display:inline-block;width:10px;height:3px;border-radius:2px;background:var(--c);margin-right:5px;vertical-align:middle}
@@ -1037,7 +1043,7 @@ async function gmTick(){
   try{
     const r=await api('/api/gpumon?since='+GM.seq);
     if(r.enabled===false){ gmStop(); $('#gm-card').style.display='none'; return; }
-    if(r.samples.length){ if(r.samples[0].seq<GM.seq) GM.buf=[]; GM.buf.push(...r.samples); GM.buf=GM.buf.slice(-300); GM.seq=r.seq; }
+    if(r.samples.length){ if(r.samples[0].seq<GM.seq) GM.buf=[]; GM.buf.push(...r.samples); const lt=GM.buf[GM.buf.length-1].t; GM.buf=GM.buf.filter(x=>x.t>=lt-310).slice(-400); GM.seq=r.seq; }
     if(r.seq<GM.seq) { GM.seq=0; GM.buf=[]; }
     $('#gm-name').textContent=r.name||'';
     const live=$('#gm-live'), last=GM.buf[GM.buf.length-1], fresh=last && (Date.now()/1000-last.t)<6;
@@ -1067,11 +1073,14 @@ function gmRender(procs){
     ].join('');
   } else $('#gm-tiles').innerHTML='<div class="sub">Čekam prve podatke s kartice…</div>';
   gmChart();
-  if(!procs.length){ $('#gm-procs').innerHTML='<div class="sub" style="margin-top:8px">Trenutno nijedan proces ne koristi karticu.</div>'; return; }
+  const head=`<thead><tr><th style="width:70px">PID</th><th style="width:120px">Proces</th><th>Datoteka</th><th style="width:170px">Izlaz</th><th style="width:66px" class="num">SM %</th><th style="width:72px" class="num">ENC %</th><th style="width:72px" class="num">DEC %</th><th style="width:80px" class="num">VRAM</th></tr></thead>`;
+  if(!procs.length){ $('#gm-procs').innerHTML=`<div class="gm-procbox"><table class="dtable" style="min-width:720px">${head}</table><div class="gm-empty sub">Trenutno nijedan proces ne koristi karticu.</div></div>`; return; }
+  const box=$('#gm-procs .gm-procbox'), keep=box?box.scrollTop:0;
   const n=v=>v==null?'–':Math.round(v);
-  $('#gm-procs').innerHTML=`<div style="overflow-x:auto"><table class="dtable" style="margin-top:10px;min-width:720px"><thead><tr><th style="width:70px">PID</th><th style="width:120px">Proces</th><th>Datoteka</th><th style="width:170px">Izlaz</th><th style="width:56px" class="num">SM %</th><th style="width:56px" class="num">ENC %</th><th style="width:56px" class="num">DEC %</th><th style="width:80px" class="num">VRAM</th></tr></thead><tbody>${
+  $('#gm-procs').innerHTML=`<div class="gm-procbox"><table class="dtable" style="min-width:720px">${head}<tbody>${
     procs.map(p=>`<tr><td>${p.pid}</td><td>${esc(p.name||'?')}${p.test?' <span class="pill">test</span>':''}</td><td class="path" title="${esc(p.input||'')}">${esc(p.input||'–')}</td><td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc([p.what,p.codec].filter(Boolean).join(' · ')||'–')}</td><td class="num">${n(p.sm)}</td><td class="num">${n(p.enc)}</td><td class="num">${n(p.dec)}</td><td class="num">${p.vram==null?'–':Math.round(p.vram)+' MB'}</td></tr>`).join('')
   }</tbody></table></div>`;
+  if(keep) $('#gm-procs .gm-procbox').scrollTop=keep;
 }
 function gmChart(){
   const c=$('#gm-chart'); if(!c) return;

@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.7.1"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -949,7 +949,7 @@ import subprocess
 HEX32 = re.compile(r"^[0-9a-f]{32}$")
 
 
-HELPER_VERSION = 7
+HELPER_VERSION = 8
 
 # NVENC patch: keylase/nvidia-patch, zakucana provjerena verzija. Skripta se ne sprema u ovaj
 # repozitorij (nema licence za redistribuciju) - preuzima se s GitHuba i provjerava sha256 ovdje
@@ -1334,7 +1334,8 @@ op_gpumon() {
   pm=1
   end=$(( $(date +%s) + secs ))
   while [ "$(date +%s)" -lt "$end" ]; do
-    echo "G $(date +%s),$($NS --query-gpu=utilization.gpu,utilization.encoder,utilization.decoder,memory.used,memory.total,temperature.gpu,power.draw,power.limit,fan.speed,clocks.gr,clocks.mem,pstate --format=csv,noheader,nounits 2>/dev/null | head -1)" || return
+    t0=$(date +%s)
+    echo "G $t0,$($NS --query-gpu=utilization.gpu,utilization.encoder,utilization.decoder,memory.used,memory.total,temperature.gpu,power.draw,power.limit,fan.speed,clocks.gr,clocks.mem,pstate --format=csv,noheader,nounits 2>/dev/null | head -1)" || return
     pids=""
     if [ "$pm" = 1 ]; then
       pmo=$($NS pmon -c 1 -s um 2>/dev/null)
@@ -1355,7 +1356,8 @@ op_gpumon() {
       fi
     done
     echo "T"
-    [ "$pm" = 1 ] || sleep 1
+    # najviše jedan uzorak u sekundi (pmon na nekim driverima vrati odmah)
+    while [ "$(date +%s)" -le "$t0" ]; do sleep 0.2 2>/dev/null || sleep 1; done
   done
   echo "END"
 }
@@ -2707,7 +2709,8 @@ def _num(x):
 
 
 class GpuMon:
-    KEEP = 300          # uzoraka u povijesti
+    KEEP = 400          # najviše uzoraka u povijesti
+    WINDOW = 310        # s povijesti (graf prikazuje 5 min)
     IDLE_STOP = 45      # s bez upita iz preglednika -> zaustavi
     CHUNK = 600         # trajanje jednog SSH poziva
 
@@ -2788,11 +2791,16 @@ class GpuMon:
                               **self._describe(args)})
             smp = {k2: v2 for k2, v2 in cur.items() if not k2.startswith("_")}
             with self.lock:
+                self.procs = procs
+                if self.samples and smp["t"] <= self.samples[-1]["t"]:
+                    self._cur = None
+                    return          # već imamo uzorak za tu sekundu
                 self.seq += 1
                 smp["seq"] = self.seq
                 self.samples.append(smp)
-                del self.samples[:-self.KEEP]
-                self.procs = procs
+                cut = smp["t"] - self.WINDOW
+                while self.samples and (self.samples[0]["t"] < cut or len(self.samples) > self.KEEP):
+                    self.samples.pop(0)
             self._cur = None
 
     @staticmethod
