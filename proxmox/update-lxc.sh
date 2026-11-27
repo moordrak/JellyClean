@@ -85,6 +85,7 @@ else
   cp -a "$SRC"/. "$APP"/
 fi
 chown -R root:root "$APP"
+if [ -x "$APP/proxmox/lxc-post-update.sh" ]; then bash "$APP/proxmox/lxc-post-update.sh" || echo "⚠ lxc-post-update.sh nije uspio"; fi
 systemctl restart jellyclean
 sleep 2
 if systemctl is-active -q jellyclean; then

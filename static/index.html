@@ -261,6 +261,18 @@ header{gap:12px}
 .bk-kind{font-size:11px;padding:1px 7px;border-radius:9px;border:1px solid var(--line)}
 .bk-kind.full{color:#7fd6f5;border-color:#1d5a73}.bk-kind.users{color:#d6a8e6;border-color:#5b3466}
 #bk-table td .sub{display:block}
+.st-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.st-card h3{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.st-card .st-src{font-family:var(--mono);font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.st-card .toolbar{margin:10px 0 0}
+.st-add{display:flex;align-items:center;justify-content:center;border-style:dashed;cursor:pointer;min-height:120px;color:var(--muted)}
+.st-add:hover{border-color:var(--accent);color:var(--text)}
+.st-form{display:grid;grid-template-columns:2fr 1fr;gap:10px 14px;margin:10px 0}
+.st-form label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
+.st-form input,.st-form select,#std-host{background:var(--panel2);border:1px solid var(--line);color:var(--text);padding:7px 9px;border-radius:7px;font:inherit}
+.st-exp label{display:flex;gap:10px;padding:5px 8px;border-radius:6px;cursor:pointer;font-family:var(--mono);font-size:12.5px}
+.st-exp label:hover{background:rgba(255,255,255,.04)}
+.st-exp{max-height:200px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:4px;margin-bottom:6px}
 a.btn{text-decoration:none;display:inline-block}
 </style>
 </head>
@@ -492,7 +504,11 @@ a.btn{text-decoration:none;display:inline-block}
 <section class="tab" id="tab-backup">
   <div class="tab-head"><h2>Backup i restore</h2><p>Sigurnosne kopije Jellyfina - vraćanje na isti ili potpuno drugi server</p></div>
   <div id="bk-job"></div>
-  <div class="section"><h2>Nova sigurnosna kopija <span class="sub" id="bk-srv" style="text-transform:none;letter-spacing:0"></span></h2>
+  <div class="section"><h2>Mjesta pohrane</h2>
+    <div class="st-grid" id="st-list"><div class="sub">Učitavam…</div></div>
+  </div>
+  <div class="section" style="margin-top:22px"><h2>Nova sigurnosna kopija <span class="sub" id="bk-srv" style="text-transform:none;letter-spacing:0"></span></h2>
+    <div class="toolbar"><label>Spremi na <select id="bk-loc"></select></label><span class="sub" id="bk-loc-free"></span></div>
     <div class="bk-grid">
       <div class="card bk-card" id="bk-full"><div class="sub">Učitavam…</div></div>
       <div class="card bk-card" id="bk-users"><div class="sub">Učitavam…</div></div>
@@ -500,7 +516,7 @@ a.btn{text-decoration:none;display:inline-block}
   </div>
   <div class="section" style="margin-top:22px"><h2>Spremljene kopije</h2>
     <div class="toolbar">
-      <label class="btn" style="cursor:pointer">Učitaj kopiju (.tar)…<input type="file" id="bk-upload" accept=".tar,application/x-tar" style="display:none"></label>
+      <label class="btn" style="cursor:pointer" title="Sprema se na mjesto odabrano pod 'Spremi na'">Učitaj kopiju (.tar)…<input type="file" id="bk-upload" accept=".tar,application/x-tar" style="display:none"></label>
       <span class="sub" id="bk-disk"></span>
     </div>
     <div id="bk-list"></div>
@@ -594,6 +610,21 @@ a.btn{text-decoration:none;display:inline-block}
     <div id="svf-res"></div>
     <div class="row"><button class="btn" type="button" id="svf-cancel">Odustani</button><button class="btn primary" type="button" id="svf-save">Spremi i provjeri vezu</button></div>
   </form>
+</dialog>
+
+<dialog id="stdlg">
+  <div class="head" style="display:flex;align-items:center;gap:12px"><h3 style="margin:0">Dodaj NAS (NFS)</h3><button class="btn" id="std-close" style="margin-left:auto">Zatvori ✕</button></div>
+  <p class="sub">NFS export montira se <b>unutar kontejnera JellyCleana</b> u <code>/mnt/jellyclean-nas/…</code> i upisuje u njegov <code>/etc/fstab</code> (ostaje i nakon restarta). Na NAS-u dopusti IP adresu kontejnera u NFS pravilima, s pravom pisanja.</p>
+  <div class="toolbar"><label>NAS <input id="std-host" placeholder="192.168.8.20" style="width:180px"></label><button class="btn" id="std-find">Pronađi exporte</button><span class="sub" id="std-find-res"></span></div>
+  <div id="std-exports"></div>
+  <div class="st-form">
+    <label>NFS export <input id="std-src" placeholder="192.168.8.20:/mnt/user/Backup" style="width:100%"></label>
+    <label>Verzija NFS-a <select id="std-vers"><option value="auto">automatski</option><option value="4.2">4.2</option><option value="4.1">4.1</option><option value="4">4</option><option value="3">3</option></select></label>
+    <label>Mapa na NAS-u <input id="std-sub" value="jellyclean" style="width:100%"></label>
+    <label>Naziv <input id="std-name" placeholder="npr. Unraid" style="width:100%"></label>
+  </div>
+  <div id="std-res"></div>
+  <div class="row"><button class="btn" id="std-test">Testiraj</button><button class="btn primary" id="std-add">Dodaj i montiraj</button></div>
 </dialog>
 
 <dialog id="bkdlg">
@@ -1350,7 +1381,7 @@ const fsz=n=>n==null||n<0?'–':fmt(n);
 const fdt=ts=>{ const d=new Date(ts); return isNaN(d)?'–':d.toLocaleString('hr-HR',{day:'numeric',month:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'}); };
 async function loadBk(){
   try{ BKS.data=await api('/api/backup'); }catch(e){ $('#bk-list').innerHTML=`<div class="note warn">${esc(e.message)}</div>`; return; }
-  renderBkList(); renderBkJob();
+  renderBkList(); renderBkJob(); renderBkLoc(); loadSt();
   const cur=(BKS.data.servers||[]).find(x=>x.id===BKS.data.current);
   $('#bk-srv').textContent = cur ? '· server '+cur.name : '';
   bkInfo();
@@ -1386,7 +1417,7 @@ function renderBkFull(){
   $('#bk-go-full').onclick=async()=>{
     const stop=$('#bk-stop').checked, meta=$('#bk-meta').checked;
     if(stop && !confirm('Jellyfin će biti zaustavljen dok traje pakiranje (reprodukcija se prekida). Nastaviti?')) return;
-    try{ await api('/api/backup/full',{stop, metadata:meta}); }catch(e){ return toast(e.message,true); }
+    try{ await api('/api/backup/full',{stop, metadata:meta, loc:bkLoc()}); }catch(e){ return toast(e.message,true); }
     bkPoll();
   };
 }
@@ -1405,7 +1436,7 @@ function renderBkUsers(){
   $('#bk-go-users').onclick=async()=>{
     const sel=$$('.bku').filter(c=>c.checked).map(c=>c.value);
     if(!sel.length) return toast('Odaberi barem jednog korisnika',true);
-    try{ await api('/api/backup/users',{users: sel.length===$$('.bku').length?[]:sel}); }catch(e){ return toast(e.message,true); }
+    try{ await api('/api/backup/users',{users: sel.length===$$('.bku').length?[]:sel, loc:bkLoc()}); }catch(e){ return toast(e.message,true); }
     bkPoll();
   };
 }
@@ -1414,32 +1445,119 @@ function bkContents(b){
   if(b.kind==='full') return ['baza, postavke, pluginovi', c.stats?'statistika gledanja':'', c.metadata?'metapodaci':''].filter(Boolean).join(' · ');
   return `${c.users||0} korisnika · ${c.played||0} odgledano · ${c.resume||0} započeto · ${c.favorites||0} favorita · ${c.playlists||0} playlista`;
 }
+// ---- mjesta pohrane (lokalno + NAS)
+function renderBkLoc(){
+  const sel=$('#bk-loc'), prev=sel.value || (()=>{ try{ return localStorage.getItem('jc-bk-loc'); }catch(e){ return null; } })();
+  const L=(BKS.data.locations||[]);
+  sel.innerHTML=L.map(l=>`<option value="${esc(l.id)}"${l.ok?'':' disabled'}>${esc(l.name)}${l.ok?'':' (nije montiran)'}</option>`).join('');
+  if(prev && L.some(l=>l.id===prev&&l.ok)) sel.value=prev;
+  const upd=()=>{ const l=L.find(x=>x.id===sel.value); $('#bk-loc-free').textContent = l&&l.free!=null ? fsz(l.free)+' slobodno · '+l.path : ''; try{ localStorage.setItem('jc-bk-loc', sel.value); }catch(e){} };
+  sel.onchange=upd; upd();
+}
+const bkLoc=()=>$('#bk-loc').value||'local';
+async function loadSt(){
+  let r; try{ r=await api('/api/storage'); }catch(e){ $('#st-list').innerHTML=`<div class="note warn">${esc(e.message)}</div>`; return; }
+  const loc=(BKS.data&&BKS.data.locations||[]).find(l=>l.id==='local')||{};
+  let h=`<div class="card st-card"><h3>Lokalno <span class="pill ok">uvijek dostupno</span></h3><div class="st-src">${esc(loc.path||'')}</div>
+    <div class="sub" style="margin-top:6px">${fsz(loc.free)} slobodno u kontejneru JellyCleana</div></div>`;
+  for(const n of r.nas){
+    const pct=n.total?Math.round(n.used/n.total*100):0;
+    const pill=!n.mounted?'<span class="pill bad">nije montiran</span>':(n.writable?'<span class="pill ok">spreman</span>':'<span class="pill bad">nema prava pisanja</span>');
+    h+=`<div class="card st-card"><h3>${esc(n.name)} ${pill}</h3><div class="st-src">${esc(n.src)} · NFS ${esc(n.vers)}</div><div class="st-src">→ ${esc(n.path)}</div>
+      ${n.mounted&&n.total?`<div class="bar${pct>90?' bad':pct>75?' warn':''}"><i style="width:${pct}%"></i></div><div class="sub">${fsz(n.free)} slobodno od ${fsz(n.total)}</div>`:''}
+      ${n.write_error?`<div class="note warn" style="margin:8px 0 0">Pisanje nije uspjelo: ${esc(n.write_error)}.<br>Na NAS-u dopusti pisanje tom UID-u za IP kontejnera (ili isključi root_squash / mapiraj korisnike).</div>`:''}
+      ${!n.in_fstab?'<div class="note warn" style="margin:8px 0 0">Nema ga u /etc/fstab kontejnera - ukloni ga i dodaj ponovno.</div>':''}
+      <div class="toolbar">${n.mounted?`<button class="btn" data-st="umount" data-id="${esc(n.id)}">Odspoji</button>`:`<button class="btn primary" data-st="mount" data-id="${esc(n.id)}">Montiraj</button>`}
+        <button class="btn danger" data-st="remove" data-id="${esc(n.id)}">Ukloni</button></div></div>`;
+  }
+  h+=`<div class="card st-add" id="st-add-btn">${r.helper?'+ Dodaj NAS (NFS)':`<div style="padding:10px;text-align:center"><b>NFS pohrana nije postavljena</b><br><span class="sub">Na Proxmox hostu pokreni <code>bash update-lxc.sh</code><br>ili u kontejneru <code>bash /opt/jellyclean/proxmox/lxc-post-update.sh</code></span></div>`}</div>`;
+  if(r.error) h=`<div class="note warn" style="grid-column:1/-1">${esc(r.error)}</div>`+h;
+  $('#st-list').innerHTML=h;
+  const add=$('#st-add-btn'); if(r.helper) add.onclick=stAddDlg;
+}
+$('#st-list').addEventListener('click', async e=>{
+  const b=e.target.closest('[data-st]'); if(!b) return;
+  const id=b.dataset.id, a=b.dataset.st;
+  if(a==='remove' && !confirm('Ukloniti ovaj NAS iz JellyCleana?\n\nOdmontira se i briše iz /etc/fstab kontejnera. Sigurnosne kopije na NAS-u ostaju (ne brišu se).')) return;
+  b.disabled=true;
+  try{ if(a==='remove') await api('/api/storage/remove',{id}); else await api('/api/storage/mount',{id, on:a==='mount'}); toast('Gotovo'); }
+  catch(err){ toast(err.message,true); }
+  loadBk();
+});
+function stAddDlg(){
+  ['std-host','std-src','std-name'].forEach(i=>$('#'+i).value=''); $('#std-sub').value='jellyclean'; $('#std-vers').value='auto';
+  $('#std-exports').innerHTML=''; $('#std-res').innerHTML=''; $('#std-find-res').textContent='';
+  $('#stdlg').showModal();
+}
+$('#std-close').onclick=()=>$('#stdlg').close();
+$('#std-find').onclick=async()=>{
+  const host=$('#std-host').value.trim(); $('#std-find-res').textContent='Tražim…';
+  try{ const r=await api('/api/storage/exports',{host});
+    $('#std-find-res').textContent=r.exports.length?`${r.exports.length} exporta`:'NAS nije prijavio nijedan export';
+    $('#std-exports').innerHTML=r.exports.length?`<div class="st-exp">${r.exports.map(x=>`<label><input type="radio" name="std-e" value="${esc(r.host+':'+x.path)}"><span>${esc(x.path)}</span><span class="sub">${esc(x.clients)}</span></label>`).join('')}</div>`:'';
+    $$('input[name=std-e]').forEach(r=>r.onchange=()=>{ $('#std-src').value=r.value; if(!$('#std-name').value) $('#std-name').value=r.value.split(':/')[1].split('/').pop()||host; });
+  }catch(e){ $('#std-find-res').textContent=e.message; }
+};
+$('#std-test').onclick=async()=>{
+  const b=$('#std-test'); b.disabled=true; $('#std-res').innerHTML='<div class="sub">Testiram montiranje…</div>';
+  try{ const r=await api('/api/storage/test',{src:$('#std-src').value.trim(), vers:$('#std-vers').value});
+    $('#std-res').innerHTML=`<div class="note">Montiranje radi: ${r.entries} stavki u exportu, ${fsz(r.free)} slobodno od ${fsz(r.total)}.</div>`; }
+  catch(e){ $('#std-res').innerHTML=`<div class="note warn">${esc(e.message)}</div>`; }
+  b.disabled=false;
+};
+$('#std-add').onclick=async()=>{
+  const b=$('#std-add'); b.disabled=true; $('#std-res').innerHTML='<div class="sub">Dodajem i montiram…</div>';
+  try{ const r=await api('/api/storage/add',{src:$('#std-src').value.trim(), vers:$('#std-vers').value, subdir:$('#std-sub').value.trim(), name:$('#std-name').value.trim()});
+    if(r.writable){ toast('NAS dodan'); $('#stdlg').close(); }
+    else $('#std-res').innerHTML=`<div class="note warn">NAS je montiran, ali JellyClean ne može pisati u <code>${esc(r.subdir)}</code>: ${esc(r.write_error||'')}.<br>Na NAS-u dopusti pisanje za IP kontejnera (pravo rw, bez root_squash ili s mapiranjem na vlasnika mape).</div>`;
+    loadBk();
+  }catch(e){ $('#std-res').innerHTML=`<div class="note warn">${esc(e.message)}</div>`; }
+  b.disabled=false;
+};
 function renderBkList(){
   const d=BKS.data, L=d.backups||[];
   $('#bk-disk').textContent = d.disk ? `${fsz(d.disk.free)} slobodno u ${d.disk.dir}` : '';
   if(!L.length){ $('#bk-list').innerHTML='<div class="empty">Još nema sigurnosnih kopija.</div>'; return; }
-  $('#bk-list').innerHTML=`<table id="bk-table"><thead><tr><th>Napravljeno</th><th>Vrsta</th><th>Izvor</th><th>Sadržaj</th><th class="num">Veličina</th><th></th></tr></thead><tbody>${
+  $('#bk-list').innerHTML=`<table id="bk-table"><thead><tr><th>Napravljeno</th><th>Vrsta</th><th>Izvor</th><th>Sadržaj</th><th>Mjesto</th><th class="num">Veličina</th><th></th></tr></thead><tbody>${
     L.map(b=>`<tr><td>${fdt(b.created)}${b.uploaded?'<span class="sub">učitano '+fdt(b.uploaded)+'</span>':''}</td>
       <td><span class="bk-kind ${b.kind}">${b.kind==='full'?'puni':'korisnički'}</span></td>
       <td>${esc((b.server||{}).name||'?')}<span class="sub">${esc(((b.jellyfin||{}).server_name||'')+((b.jellyfin||{}).version?' · Jellyfin '+(b.jellyfin||{}).version:''))}</span></td>
       <td class="sub" style="white-space:normal">${esc(bkContents(b))}</td>
+      <td>${(b.location||{}).id==='local'?'<span class="pill">lokalno</span>':`<span class="pill ok">${esc((b.location||{}).name||'')}</span>`}</td>
       <td class="num">${fsz(b.size)}</td>
-      <td style="white-space:nowrap;text-align:right"><button class="btn primary" data-bk="restore" data-id="${esc(b.id)}">Vrati…</button>
-        <a class="btn" href="/api/backup/download?id=${encodeURIComponent(b.id)}" download>Preuzmi</a>
-        <button class="btn danger" data-bk="del" data-id="${esc(b.id)}">Obriši</button></td></tr>`).join('')}</tbody></table>`;
+      <td style="white-space:nowrap;text-align:right"><button class="btn primary" data-bk="restore" data-id="${esc(b.id)}" data-loc="${esc((b.location||{}).id)}">Vrati…</button>
+        ${(d.locations||[]).filter(l=>l.ok).length>1?`<button class="btn" data-bk="copy" data-id="${esc(b.id)}" data-loc="${esc((b.location||{}).id)}" title="Kopiraj ili premjesti na drugo mjesto pohrane">Na…</button>`:''}
+        <a class="btn" href="/api/backup/download?id=${encodeURIComponent(b.id)}&loc=${encodeURIComponent((b.location||{}).id||'')}" download>Preuzmi</a>
+        <button class="btn danger" data-bk="del" data-id="${esc(b.id)}" data-loc="${esc((b.location||{}).id)}">Obriši</button></td></tr>`).join('')}</tbody></table>`;
 }
 $('#bk-list').addEventListener('click', async e=>{
   const b=e.target.closest('[data-bk]'); if(!b) return;
-  const id=b.dataset.id;
+  const id=b.dataset.id, loc=b.dataset.loc;
   if(b.dataset.bk==='del'){
     if(!confirm('Trajno obrisati ovu sigurnosnu kopiju?')) return;
-    try{ await api('/api/backup/delete',{id}); toast('Obrisano'); }catch(err){ toast(err.message,true); }
+    try{ await api('/api/backup/delete',{id, loc}); toast('Obrisano'); }catch(err){ toast(err.message,true); }
     return loadBk();
   }
-  bkRestoreDlg(id);
+  if(b.dataset.bk==='copy') return bkCopyDlg(id, loc);
+  bkRestoreDlg(id, loc);
 });
-function bkRestoreDlg(id){
-  const b=(BKS.data.backups||[]).find(x=>x.id===id); if(!b) return;
+function bkCopyDlg(id, loc){
+  const b=(BKS.data.backups||[]).find(x=>x.id===id && (x.location||{}).id===loc); if(!b) return;
+  const locs=(BKS.data.locations||[]).filter(l=>l.ok && l.id!==(b.location||{}).id);
+  $('#bkd-title').textContent='Kopiraj / premjesti sigurnosnu kopiju';
+  $('#bkd-body').innerHTML=`<p class="sub" style="margin-top:0">${esc(id)} (${fsz(b.size)}) je trenutno na: <b>${esc((b.location||{}).name||'')}</b></p>
+    <div class="toolbar"><label>Na <select id="bkc-loc">${locs.map(l=>`<option value="${esc(l.id)}">${esc(l.name)} · ${fsz(l.free)} slobodno</option>`).join('')}</select></label></div>
+    <label class="bk-opt"><input type="checkbox" id="bkc-move"><span>Premjesti (obriši s trenutnog mjesta nakon provjere)</span></label>
+    <div class="row"><button class="btn" id="bkd-cancel">Odustani</button><button class="btn primary" id="bkc-go">Pokreni</button></div>`;
+  $('#bkd-cancel').onclick=()=>$('#bkdlg').close();
+  $('#bkc-go').onclick=async()=>{
+    try{ await api('/api/backup/copy',{id, src_loc:loc, loc:$('#bkc-loc').value, move:$('#bkc-move').checked}); }catch(e){ return toast(e.message,true); }
+    $('#bkdlg').close(); bkPoll();
+  };
+  $('#bkdlg').showModal();
+}
+function bkRestoreDlg(id, loc){
+  const b=(BKS.data.backups||[]).find(x=>x.id===id && (x.location||{}).id===loc); if(!b) return;
   const srvs=BKS.data.servers||[], srcId=(b.server||{}).id;
   const def=srvs.find(s=>s.id===BKS.data.current)||srvs[0]||{};
   $('#bkd-title').textContent = b.kind==='full' ? 'Vrati puni backup' : 'Vrati korisnički backup';
@@ -1483,7 +1601,7 @@ function bkRestoreDlg(id){
          settings:$('#bkd-set').checked, policy:$('#bkd-pol').checked, path_map:map};
       if(!o.users.length) return toast('Odaberi barem jednog korisnika',true);
     }
-    try{ await api('/api/backup/restore',{id, target, options:o}); }catch(e){ return toast(e.message,true); }
+    try{ await api('/api/backup/restore',{id, loc, target, options:o}); }catch(e){ return toast(e.message,true); }
     $('#bkdlg').close(); bkPoll();
   };
   $('#bkdlg').showModal();
@@ -1514,6 +1632,8 @@ function renderBkJob(){
     }else if(r.prev!==undefined || r.pairs){  // puni restore
       h+=`<div class="note" style="margin-top:10px">Vraćeno.${r.started?' Jellyfin je ponovno pokrenut.':''}${r.pairs&&r.pairs.length?'<br>Prilagođene putanje: '+r.pairs.map(p=>`<code>${esc(p[0])}</code> → <code>${esc(p[1])}</code>`).join(', '):''}${r.new_server_id?'<br>Novi Server ID.':''}
         ${r.prev?`<br>Prethodni podaci: <code>${esc(r.prev)}</code>`:''}${r.warning?`<br><b>${esc(r.warning)}</b>`:''}${r.same_server?'':'<br>Ako mediji nisu na istim putanjama, otvori <b>Provjera putanja</b>.'}</div>`;
+    }else if(r.copied_to){
+      h+=`<div class="sub" style="margin-top:8px">${r.moved?'Premješteno':'Kopirano'} na ${esc(r.copied_to)} · ${fsz(r.size)}</div>`;
     }else if(r.backup){
       h+=`<div class="sub" style="margin-top:8px">Spremljeno kao ${esc(r.backup)}${r.size?' · '+fsz(r.size):''}${r.stats===false?' · statistika gledanja nije pronađena (plugin Playback Reporting)':''}</div>`;
     }
@@ -1533,7 +1653,7 @@ $('#bk-upload').onchange=async e=>{
   const f=e.target.files[0]; if(!f) return;
   toast(`Učitavam ${f.name} (${fsz(f.size)})…`);
   try{
-    const r=await fetch('/api/backup/upload',{method:'POST',headers:{'X-Requested-With':'JellyClean','Content-Type':'application/x-tar'},body:f});
+    const r=await fetch('/api/backup/upload?loc='+encodeURIComponent(bkLoc()),{method:'POST',headers:{'X-Requested-With':'JellyClean','Content-Type':'application/x-tar'},body:f});
     const j=await r.json(); if(!r.ok) throw new Error(j.error||r.statusText);
     toast('Kopija učitana'); loadBk();
   }catch(err){ toast(err.message,true); }

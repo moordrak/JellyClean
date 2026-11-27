@@ -854,6 +854,7 @@ else
   cp -a "$SRC"/. "$APP"/
 fi
 chown -R root:root "$APP"
+if [ -x "$APP/proxmox/lxc-post-update.sh" ]; then bash "$APP/proxmox/lxc-post-update.sh" || echo "⚠ lxc-post-update.sh nije uspio"; fi
 systemctl restart jellyclean
 sleep 2
 if systemctl is-active -q jellyclean; then
@@ -1146,6 +1147,7 @@ pct push "$CTID" "$TMPD/svc" /etc/systemd/system/jellyclean.service
 
 
 ctx "mkdir -p /var/lib/jellyclean && chown -R $RUN_UID:$RUN_GID /var/lib/jellyclean && chown -R root:root $APP_DIR && systemctl daemon-reload && systemctl enable -q --now jellyclean"
+ctx "bash $APP_DIR/proxmox/lxc-post-update.sh >/dev/null 2>&1 || true"   # NFS pohrana (jellyclean-nas + sudoers)
 
 info "Čekam da se servis pokrene…"
 CT_IP=""; HEALTH=0

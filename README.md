@@ -244,7 +244,7 @@ bash proxmox/jellyfin-docker2lxc.sh --sync-nvidia <ID>   # nakon nadogradnje NVI
 
 ## Backup i restore
 
-Kartica **Backup i restore** radi dvije vrste sigurnosnih kopija. Kopije se spremaju u `DATA_DIR/backups` u JellyCleanu, mogu se preuzeti kao `.tar` i učitati u drugi JellyClean.
+Kartica **Backup i restore** radi dvije vrste sigurnosnih kopija. Spremaju se **lokalno** (`DATA_DIR/backups` u JellyCleanu) ili na **NAS preko NFS-a** (vidi [Pohrana na NAS](#pohrana-na-nas-nfs)). Mogu se preuzeti kao `.tar` i učitati u drugi JellyClean.
 
 ### Puni backup (SSH)
 
@@ -274,4 +274,25 @@ Vraća se na **bilo koji** Jellyfin, pa i na potpuno novi server s drugim ID-ovi
 Korisnici se povezuju po imenu, a nepostojeći se po želji stvore s nasumičnom lozinkom (prikaže se na kraju). Biblioteke u postavkama i dozvolama povezuju se po nazivu. Ponovno vraćanje ne duplicira playliste. Na kraju se po korisniku prikaže koliko je stavki prepoznato, a koje nisu pronađene.
 
 Statistika gledanja (Playback Reporting) nije dio korisničkog backupa, jer ide samo uz cijelu bazu. Za nju koristi puni backup.
+
+### Pohrana na NAS (NFS)
+
+U kartici **Backup i restore → Mjesta pohrane → Dodaj NAS (NFS)**:
+
+1. Upiši IP NAS-a → **Pronađi exporte** (ili upiši export ručno, npr. `192.168.8.20:/mnt/user/Backup`).
+2. Odaberi verziju NFS-a, mapu na NAS-u (zadano `jellyclean`) i naziv → **Testiraj** → **Dodaj i montiraj**.
+
+NAS se montira **unutar kontejnera JellyCleana** u `/mnt/jellyclean-nas/<id>` i upisuje u `/etc/fstab` kontejnera, pa ostaje i nakon restarta. Ništa se ne dodaje u Proxmox storage. Kontejner mora biti privilegiran sa značajkom `mount=nfs`, kako ga radi `create-lxc.sh`.
+
+- Kod izrade kopije biraš **Spremi na**: lokalno ili neki od NAS-ova. Odabir se pamti.
+- Postojeću kopiju možeš **kopirati ili premjestiti** između lokalne pohrane i NAS-a (gumb **Na…**). Premještanje briše izvor tek nakon provjere veličine.
+- Vraćanje radi izravno s NAS-a.
+- Za svaki NAS vidi se zauzeće i **provjerava se može li JellyClean pisati** u mapu. Ako ne može, na NAS-u dopusti pisanje za IP kontejnera (pravo rw, bez `root_squash` ili s mapiranjem na vlasnika mape).
+- **Odspoji / Montiraj / Ukloni**: uklanjanje odmontira NAS i briše ga iz `fstab`-a, a kopije na NAS-u ostaju.
+
+Montiranje radi root pomoćni program `/usr/local/sbin/jellyclean-nas`. Servis JellyCleana smije ga pokretati preko `sudo` (pravilo u `/etc/sudoers.d/jellyclean-nas`). Program upravlja samo NFS mountovima ispod `/mnt/jellyclean-nas` i provjerava svaki ulaz. Instalira se automatski pri instalaciji i nadogradnji (`update-lxc.sh`). Ručno, unutar kontejnera:
+
+```bash
+bash /opt/jellyclean/proxmox/lxc-post-update.sh
+```
 

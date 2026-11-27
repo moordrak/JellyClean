@@ -37,6 +37,8 @@ jobs:
           bash -n proxmox/install-in-lxc.sh
           bash -n proxmox/jellyclean-pve-agent.sh
           bash -n proxmox/jellyfin-docker2lxc.sh
+          bash -n proxmox/jellyclean-nas.sh
+          bash -n proxmox/lxc-post-update.sh
 
       - name: Pakiranje
         if: steps.v.outputs.exists == 'false'

@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.3.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -4008,34 +4008,58 @@ class Backups:
         os.makedirs(d, mode=0o700, exist_ok=True)
         return d
 
-    def path(self, bid, name=None):
+    def roots(self):
+        """(mjesto, mapa) za lokalnu pohranu i svaki montirani NAS."""
+        out = []
+        for l in STORE.locations():
+            if l["ok"] and os.path.isdir(l["path"]):
+                out.append((l, l["path"]))
+        return out
+
+    def find(self, bid, loc=None):
         if not BK_ID_RE.match(bid or ""):
             raise ValueError("Neispravan ID sigurnosne kopije")
-        p = os.path.join(self.root(), bid)
+        for l, root in self.roots():
+            if loc and l["id"] != loc:
+                continue
+            p = os.path.join(root, bid)
+            if os.path.isdir(p):
+                return l, p
+        raise ValueError("Sigurnosna kopija ne postoji (NAS odspojen?)")
+
+    def path(self, bid, name=None, loc=None):
+        p = self.find(bid, loc)[1]
         return os.path.join(p, name) if name else p
 
-    def manifest(self, bid):
-        with open(self.path(bid, "manifest.json"), encoding="utf-8") as f:
+    def manifest(self, bid, loc=None):
+        with open(self.path(bid, "manifest.json", loc), encoding="utf-8") as f:
             return json.load(f)
 
     def list(self):
         out = []
-        for bid in sorted(os.listdir(self.root()), reverse=True):
-            if not BK_ID_RE.match(bid):
-                continue
+        for l, root in self.roots():
             try:
-                m = self.manifest(bid)
-            except (OSError, ValueError):
+                names = os.listdir(root)
+            except OSError:
                 continue
-            size = 0
-            for n in BK_FILES:
+            for bid in names:
+                if not BK_ID_RE.match(bid):
+                    continue
+                d = os.path.join(root, bid)
                 try:
-                    size += os.path.getsize(self.path(bid, n))
-                except OSError:
-                    pass
-            m["size"] = size
-            m.pop("paths_detail", None)
-            out.append(m)
+                    with open(os.path.join(d, "manifest.json"), encoding="utf-8") as f:
+                        m = json.load(f)
+                except (OSError, ValueError):
+                    continue
+                size = 0
+                for n in BK_FILES:
+                    try:
+                        size += os.path.getsize(os.path.join(d, n))
+                    except OSError:
+                        pass
+                m.update(id=bid, size=size, location={"id": l["id"], "name": l["name"]})
+                out.append(m)
+        out.sort(key=lambda m: m["id"], reverse=True)
         return out
 
     def disk(self):
@@ -4045,12 +4069,13 @@ class Backups:
         except OSError:
             return None
 
-    def delete(self, bid):
+    def delete(self, bid, loc=None):
         with self.lock:
             if self.job and self.job.get("running") and self.job.get("backup") == bid:
                 raise ValueError("Ova kopija se upravo koristi")
-            shutil.rmtree(self.path(bid))
-        log(f"Backup: obrisana kopija {bid}")
+            l, p = self.find(bid, loc)
+            shutil.rmtree(p)
+        log(f"Backup: obrisana kopija {bid} ({l['name']})")
         return {"ok": True}
 
     # ------------------------------------------------------------- poslovi ---
@@ -4179,23 +4204,26 @@ class Backups:
                 m = {"error": str(e)}
         return m
 
-    def _new_dir(self, kind, srv):
+    def _new_dir(self, kind, srv, loc="local"):
+        root = STORE.loc(loc)["path"]
+        os.makedirs(root, mode=0o700, exist_ok=True)
         bid = f"{time.strftime('%Y%m%d-%H%M%S')}-{kind}-{_slug(srv.name)}"
-        p = self.path(bid)
+        p = os.path.join(root, bid)
         os.makedirs(p, mode=0o700)
         return bid, p
 
     # ----------------------------------------------------------- puni backup ---
-    def start_full(self, stop=True, meta=False):
+    def start_full(self, stop=True, meta=False, loc="local"):
         if not JFC.enabled():
             raise ValueError("Puni backup treba SSH pristup Jellyfin računalu (kartica Serveri → Postavi pristup)")
         if JFC.status and JFC.status.get("helper_outdated"):
             raise ValueError("Pomoćni program na Jellyfin računalu je zastario - na kartici Serveri klikni 'Postavi pristup' i pokreni novu naredbu.")
         srv = _CUR.srv
-        return self._start("full", f"Puni backup: {srv.name}", lambda: self._full(srv, bool(stop), bool(meta)), srv)
+        L = STORE.loc(loc)
+        return self._start("full", f"Puni backup: {srv.name} → {L['name']}", lambda: self._full(srv, bool(stop), bool(meta), L["id"]), srv)
 
-    def _full(self, srv, stop, meta):
-        bid, d = self._new_dir("full", srv)
+    def _full(self, srv, stop, meta, loc="local"):
+        bid, d = self._new_dir("full", srv, loc)
         with self.lock:
             self.job["backup"] = bid
             self.job["file"] = os.path.join(d, "full.tar.gz")
@@ -4250,11 +4278,12 @@ class Backups:
             raise
 
     # ----------------------------------------------------- korisnički backup ---
-    def start_users(self, user_ids=None):
+    def start_users(self, user_ids=None, loc="local"):
         if not JF.enabled():
             raise ValueError("Korisnički backup treba Jellyfin URL i API ključ (kartica Serveri)")
         srv = _CUR.srv
-        return self._start("users", f"Korisnički backup: {srv.name}", lambda: self._users(srv, user_ids or []), srv)
+        L = STORE.loc(loc)
+        return self._start("users", f"Korisnički backup: {srv.name} → {L['name']}", lambda: self._users(srv, user_ids or [], L["id"]), srv)
 
     def _items(self, uid, extra):
         out, start = [], 0
@@ -4276,8 +4305,8 @@ class Backups:
                 "path": it.get("Path"), "pids": _pids(it.get("ProviderIds")), "season": it.get("ParentIndexNumber"),
                 "episode": it.get("IndexNumber"), "series_id": it.get("SeriesId"), "series": it.get("SeriesName")}
 
-    def _users(self, srv, sel):
-        bid, d = self._new_dir("users", srv)
+    def _users(self, srv, sel, loc="local"):
+        bid, d = self._new_dir("users", srv, loc)
         with self.lock:
             self.job["backup"] = bid
         try:
@@ -4350,8 +4379,9 @@ class Backups:
             raise
 
     # ---------------------------------------------------------------- vraćanje ---
-    def start_restore(self, bid, target_sid, opts):
-        m = self.manifest(bid)
+    def start_restore(self, bid, target_sid, opts, loc=None):
+        loc = self.find(bid, loc)[0]["id"]
+        m = self.manifest(bid, loc)
         srv = SERVERS.get(target_sid) if target_sid else _CUR.srv
         if not srv:
             raise ValueError("Odredišni server ne postoji")
@@ -4363,9 +4393,9 @@ class Backups:
             if m["kind"] == "users" and not JF.enabled():
                 raise ValueError(f"Za vraćanje korisničkog backupa {srv.name} treba Jellyfin URL i API ključ")
         return self._start("restore", f"Vraćanje {'punog' if m['kind'] == 'full' else 'korisničkog'} backupa → {srv.name}",
-                           lambda: fn(bid, m, srv, same, opts or {}), srv, backup=bid)
+                           lambda: fn(bid, m, srv, same, opts or {}, loc), srv, backup=bid)
 
-    def _restore_full(self, bid, m, srv, same, opts):
+    def _restore_full(self, bid, m, srv, same, opts, loc=None):
         src = (m.get("jellyfin") or {})
         pairs = []
         dst = self._jf_meta()
@@ -4386,7 +4416,7 @@ class Backups:
             pairs.sort(key=lambda p: -len(p[0]))
         b64 = base64.b64encode("".join(f"{a}|{b}\n" for a, b in pairs).encode()).decode() if pairs else ""
         newid = 1 if opts.get("new_server_id") else 0
-        arc = self.path(bid, "full.tar.gz")
+        arc = self.path(bid, "full.tar.gz", loc)
         total = os.path.getsize(arc)
         self._phase(f"Šaljem arhivu ({human(total)}) na {CFG['ssh_host']}…", {"done": 0, "total": total})
         cmd, _ = self._ssh_cmd("restore", (b64, newid))
@@ -4510,8 +4540,8 @@ class Backups:
             JF.req("POST", f"/Users/{uid}/FavoriteItems/{iid}")
         return True
 
-    def _restore_users(self, bid, m, srv, same, opts):
-        with open(self.path(bid, "users.json"), encoding="utf-8") as f:
+    def _restore_users(self, bid, m, srv, same, opts, loc=None):
+        with open(self.path(bid, "users.json", loc), encoding="utf-8") as f:
             doc = json.load(f)
         sel = set(opts.get("users") or [])
         src_users = [u for u in doc["users"] if not sel or u["id"] in sel or u["name"] in sel]
@@ -4615,7 +4645,7 @@ class Backups:
             self._phase(f"Korisnik {su['name']}: prepoznato {ur['matched']}/{total}, nije pronađeno {len(ur['unmatched'])}")
         rp = f"restore-{time.strftime('%Y%m%d-%H%M%S')}.json"
         try:
-            with open(self.path(bid, rp), "w", encoding="utf-8") as f:
+            with open(os.path.join(self.path(bid, None, loc), rp), "w", encoding="utf-8") as f:
                 json.dump({"target": srv.name, **report}, f, ensure_ascii=False, indent=1)
             report["report_file"] = rp
         except OSError:
@@ -4624,6 +4654,56 @@ class Backups:
         for u in report["users"]:
             u["unmatched"] = u.get("unmatched", [])[:300]
         return report
+
+    # ------------------------------------- kopiranje između lokalnog i NAS-a ---
+    def start_copy(self, bid, loc, move=False, src_loc=None):
+        src_l, src = self.find(bid, src_loc)
+        L = STORE.loc(loc)
+        if L["id"] == src_l["id"]:
+            raise ValueError("Kopija je već na tom mjestu")
+        files = [n for n in os.listdir(src) if n in BK_FILES or re.fullmatch(r"restore-[0-9-]+\.json", n)]
+        total = sum(os.path.getsize(os.path.join(src, n)) for n in files)
+        if L.get("free") is not None and total > L["free"] - 64 * 1024 * 1024:
+            raise ValueError(f"Nema dovoljno mjesta: {L['name']} ({human(L['free'])} slobodno, treba {human(total)})")
+        srv = _CUR.srv
+        verb = "Premještam" if move else "Kopiram"
+        return self._start("copy", f"{verb} kopiju na {L['name']}", lambda: self._copy(bid, src, L, files, total, move), srv, backup=bid)
+
+    def _copy(self, bid, src, L, files, total, move):
+        root = L["path"]
+        os.makedirs(root, mode=0o700, exist_ok=True)
+        dst = os.path.join(root, bid)
+        if os.path.exists(dst):
+            raise ValueError("Na odredištu već postoji kopija s tim ID-om")
+        tmp = dst + ".part"
+        shutil.rmtree(tmp, ignore_errors=True)
+        os.makedirs(tmp, mode=0o700)
+        done = 0
+        try:
+            for n in files:
+                self._phase(f"{n}…")
+                with open(os.path.join(src, n), "rb") as fi, open(os.path.join(tmp, n), "wb") as fo:
+                    while True:
+                        self._check()
+                        b = fi.read(4 << 20)
+                        if not b:
+                            break
+                        fo.write(b)
+                        done += len(b)
+                        with self.lock:
+                            self.job["progress"] = {"done": done, "total": total}
+                    fo.flush()
+                    os.fsync(fo.fileno())
+                if os.path.getsize(os.path.join(tmp, n)) != os.path.getsize(os.path.join(src, n)):
+                    raise ValueError(f"{n}: veličina se ne podudara nakon kopiranja")
+            os.rename(tmp, dst)
+        except BaseException:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
+        if move:
+            shutil.rmtree(src)
+        log(f"Backup: {bid} {'premješten' if move else 'kopiran'} na {L['name']}")
+        return {"backup": bid, "copied_to": L["name"], "moved": move, "size": total}
 
     # ------------------------------------------ kopije prije vraćanja (SSH) ---
     def prevs(self):
@@ -4637,20 +4717,23 @@ class Backups:
         return {"deleted": n}
 
     # -------------------------------------------- preuzimanje / učitavanje ---
-    def stream_download(self, bid, wfile):
-        d = self.path(bid)
+    def stream_download(self, bid, wfile, loc=None):
+        d = self.path(bid, None, loc)
         with tarfile.open(fileobj=wfile, mode="w|") as t:
             for n in sorted(os.listdir(d)):
                 if n in BK_FILES or re.fullmatch(r"restore-[0-9-]+\.json", n):
                     t.add(os.path.join(d, n), arcname=f"{bid}/{n}", recursive=False)
 
-    def upload(self, rfile, length):
+    def upload(self, rfile, length, loc="local"):
         if length <= 0:
             raise ValueError("Prazna datoteka")
-        free = (self.disk() or {}).get("free") or 0
+        L = STORE.loc(loc)
+        root = L["path"]
+        os.makedirs(root, mode=0o700, exist_ok=True)
+        free = L.get("free") or 0
         if length > free - 256 * 1024 * 1024:
-            raise ValueError(f"Nema dovoljno mjesta u {self.root()} ({human(free)} slobodno)")
-        tmp = os.path.join(self.root(), f".upload-{secrets.token_hex(4)}")
+            raise ValueError(f"Nema dovoljno mjesta: {L['name']} ({human(free)} slobodno)")
+        tmp = os.path.join(root, f".upload-{secrets.token_hex(4)}")
         os.makedirs(tmp, mode=0o700)
         try:
             raw = os.path.join(tmp, "in.tar")
@@ -4690,9 +4773,12 @@ class Backups:
                 if not need or need not in files:
                     raise ValueError("Arhiva nije potpuna")
                 bid = src
-                if os.path.exists(self.path(bid)):
+                try:
+                    self.find(bid)
                     bid = f"{time.strftime('%Y%m%d-%H%M%S')}-{kind}-{_slug('ucitano-' + (m.get('server') or {}).get('name', ''))}"
-                dst = self.path(bid)
+                except ValueError:
+                    pass
+                dst = os.path.join(root, bid)
                 os.makedirs(dst, mode=0o700)
                 for name, mem in files.items():
                     with t.extractfile(mem) as fin, open(os.path.join(dst, name), "wb") as fout:
@@ -4708,6 +4794,223 @@ class Backups:
 
 
 BK = Backups()
+
+
+import getpass
+
+# --------------------------------------------------------------------------
+# Pohrana na NAS (NFS) - montira se UNUTAR kontejnera JellyCleana preko root pomoćnog
+# programa jellyclean-nas (sudo -n), samo ispod /mnt/jellyclean-nas/<id>.
+# --------------------------------------------------------------------------
+NAS_BASE = "/mnt/jellyclean-nas"
+NAS_HELPER = "/usr/local/sbin/jellyclean-nas"
+NAS_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,23}$")
+NAS_SRC_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*:/[A-Za-z0-9._/@+-]*$")
+NAS_SUB_RE = re.compile(r"^[A-Za-z0-9._-]{1,60}$")
+
+
+class Storage:
+    def __init__(self):
+        self.lock = threading.RLock()
+
+    def _file(self):
+        return os.path.join(_GCFG["data_dir"], "storage.json")
+
+    def load(self):
+        try:
+            with open(self._file(), encoding="utf-8") as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def save(self, d):
+        tmp = self._file() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, self._file())
+
+    def nas(self):
+        return [n for n in (self.load().get("nas") or []) if NAS_ID_RE.match(n.get("id") or "")]
+
+    @staticmethod
+    def helper_ok():
+        return os.path.exists(NAS_HELPER)
+
+    def _helper(self, *args, timeout=60):
+        if not self.helper_ok():
+            raise ValueError("Pomoćni program jellyclean-nas nije instaliran. Na Proxmox hostu pokreni update-lxc.sh "
+                             "ili u kontejneru: bash /opt/jellyclean/proxmox/lxc-post-update.sh")
+        cmd = [NAS_HELPER, *map(str, args)]
+        if os.geteuid() != 0:
+            cmd = ["sudo", "-n"] + cmd
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except FileNotFoundError:
+            raise ValueError("sudo nije instaliran u kontejneru - pokreni lxc-post-update.sh")
+        except subprocess.TimeoutExpired:
+            raise ValueError("NAS ne odgovara (isteklo vrijeme)")
+        err = (p.stderr or "").strip()
+        if "sudo:" in err:
+            raise ValueError("Servis nema sudo pravo za jellyclean-nas - u kontejneru pokreni: bash /opt/jellyclean/proxmox/lxc-post-update.sh")
+        lines = (p.stdout or "").splitlines()
+        for l in lines:
+            if l.startswith("ERR "):
+                raise ValueError(l[4:])
+        if p.returncode != 0:
+            raise ValueError(err[:300] or f"jellyclean-nas: izlazni kod {p.returncode}")
+        return lines
+
+    @staticmethod
+    def dir_of(n):
+        return os.path.join(NAS_BASE, n["id"], n.get("subdir") or "jellyclean")
+
+    @staticmethod
+    def _write_test(d):
+        try:
+            os.makedirs(d, exist_ok=True)
+            t = os.path.join(d, f".jellyclean-test-{secrets.token_hex(3)}")
+            with open(t, "w") as f:
+                f.write("ok")
+            os.remove(t)
+            return True, None
+        except OSError as e:
+            return False, f"{e.strerror or e} (korisnik {getpass.getuser()}, UID {os.geteuid()})"
+
+    def status(self):
+        res = {"helper": self.helper_ok(), "user": getpass.getuser(), "uid": os.geteuid(), "nas": [], "error": None}
+        mounts = {}
+        if res["helper"]:
+            try:
+                for l in self._helper("status"):
+                    p = l.split()
+                    if p[0] == "NAS" and len(p) >= 8:
+                        num = lambda x: int(x) if x.isdigit() else None
+                        mounts[p[1]] = {"mounted": p[2] == "1", "src": p[3], "total": num(p[5]), "used": num(p[6]), "free": num(p[7])}
+            except ValueError as e:
+                res["error"] = str(e)
+        for n in self.nas():
+            m = mounts.get(n["id"], {})
+            e = dict(n, mounted=bool(m.get("mounted")), in_fstab=n["id"] in mounts, total=m.get("total"), used=m.get("used"),
+                     free=m.get("free"), path=self.dir_of(n), writable=False, write_error=None)
+            if e["mounted"]:
+                e["writable"], e["write_error"] = self._write_test(e["path"])
+            res["nas"].append(e)
+        return res
+
+    def exports(self, host):
+        host = (host or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", host):
+            raise ValueError("Upiši IP adresu ili ime NAS-a")
+        out = []
+        for l in self._helper("exports", host, timeout=30):
+            p = l.split(" ", 2)
+            if p[0] == "EXPORT" and len(p) >= 2:
+                out.append({"path": p[1], "clients": p[2] if len(p) > 2 else ""})
+        return {"host": host, "exports": out}
+
+    @staticmethod
+    def _check(src, vers):
+        src = (src or "").strip()
+        if not NAS_SRC_RE.match(src):
+            raise ValueError("NFS izvor mora biti oblika NAS:/putanja (bez razmaka)")
+        vers = str(vers or "auto")
+        if vers not in ("auto", "3", "4", "4.1", "4.2"):
+            raise ValueError("Neispravna verzija NFS-a")
+        return src, vers
+
+    def test(self, src, vers):
+        src, vers = self._check(src, vers)
+        for l in self._helper("test", src, vers, timeout=60):
+            p = l.split()
+            if p[0] == "OK":
+                num = lambda x: int(x) if x.isdigit() else None
+                return {"ok": True, "entries": num(p[1]), "total": num(p[2]), "used": num(p[3]), "free": num(p[4])}
+        raise ValueError("Neočekivan odgovor pomoćnog programa")
+
+    def add(self, name, src, vers, subdir):
+        src, vers = self._check(src, vers)
+        name = (name or "").strip()[:40] or src.split(":", 1)[0]
+        subdir = (subdir or "jellyclean").strip().strip("/")
+        if not NAS_SUB_RE.match(subdir):
+            raise ValueError("Mapa na NAS-u smije sadržavati slova, brojke, točku, crticu i podvlaku")
+        with self.lock:
+            d = self.load()
+            nas = d.get("nas") or []
+            if any(n.get("src") == src for n in nas):
+                raise ValueError("Taj NFS export je već dodan")
+            base = _slug(name)[:20] or "nas"
+            nid, i = base, 2
+            while any(n["id"] == nid for n in nas) or os.path.exists(os.path.join(NAS_BASE, nid)):
+                nid, i = f"{base}-{i}", i + 1
+            self._helper("add", nid, src, vers, timeout=60)
+            ent = {"id": nid, "name": name, "src": src, "vers": vers, "subdir": subdir, "created": now_iso()}
+            nas.append(ent)
+            d["nas"] = nas
+            self.save(d)
+        ok, err = self._write_test(self.dir_of(ent))
+        log(f"Pohrana: dodan NAS {name} ({src})" + ("" if ok else f" - nema prava pisanja: {err}"))
+        return dict(ent, writable=ok, write_error=err)
+
+    def remove(self, nid):
+        if not NAS_ID_RE.match(nid or ""):
+            raise ValueError("Neispravan ID")
+        with self.lock:
+            d = self.load()
+            if BK.job and BK.job.get("running"):
+                raise ValueError("Pričekaj da završi posao s kopijama")
+            self._helper("remove", nid, timeout=60)
+            d["nas"] = [n for n in d.get("nas") or [] if n.get("id") != nid]
+            self.save(d)
+        log(f"Pohrana: uklonjen NAS {nid} (datoteke na NAS-u nisu dirane)")
+        return {"ok": True}
+
+    def mount(self, nid, on=True):
+        if not NAS_ID_RE.match(nid or ""):
+            raise ValueError("Neispravan ID")
+        self._helper("mount" if on else "umount", nid, timeout=60)
+        return {"ok": True}
+
+    @staticmethod
+    def is_mounted(mp):
+        try:
+            with open("/proc/self/mounts", encoding="utf-8") as f:
+                for line in f:
+                    p = line.split()
+                    if len(p) > 1 and p[1].replace("\\040", " ") == mp:
+                        return True
+        except OSError:
+            pass
+        return os.path.ismount(mp)
+
+    def locations(self):
+        """Mjesta za sigurnosne kopije: lokalno + montirani NAS-ovi."""
+        locs = [{"id": "local", "name": "Lokalno (JellyClean)", "path": BK.root(), "ok": True, "free": (BK.disk() or {}).get("free")}]
+        for n in self.nas():
+            mp = os.path.join(NAS_BASE, n["id"])
+            ok = self.is_mounted(mp)
+            free = None
+            if ok:
+                try:
+                    st = os.statvfs(mp)
+                    free = st.f_bavail * st.f_frsize
+                except OSError:
+                    ok = False
+            locs.append({"id": n["id"], "name": f"NAS: {n.get('name') or n['id']}", "path": self.dir_of(n), "ok": ok, "free": free,
+                         "src": n.get("src")})
+        return locs
+
+    def loc(self, lid):
+        lid = lid or "local"
+        for l in self.locations():
+            if l["id"] == lid:
+                if not l["ok"]:
+                    raise ValueError(f"{l['name']} nije montiran - na kartici Backup klikni 'Montiraj'")
+                return l
+        raise ValueError("Nepoznato mjesto pohrane")
+
+
+STORE = Storage()
 
 
 def scheduler():
@@ -4987,8 +5290,10 @@ class Handler(BaseHTTPRequestHandler):
             if u.path in ("/", "/index.html"):
                 with open(os.path.join(STATIC_DIR, "index.html"), "rb") as f:
                     return self._send(200, f.read(), "text/html; charset=utf-8")
+            if u.path == "/api/storage":
+                return self._send(200, STORE.status())
             if u.path == "/api/backup":
-                return self._send(200, {"backups": BK.list(), "job": BK.state(), "disk": BK.disk(),
+                return self._send(200, {"backups": BK.list(), "job": BK.state(), "disk": BK.disk(), "locations": STORE.locations(),
                                         "servers": [{"id": s.id, "name": s.name} for s in SERVERS.all()],
                                         "current": _CUR.srv.id if getattr(_CUR, "srv", None) else None})
             if u.path == "/api/backup/info":
@@ -4996,22 +5301,22 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/backup/prevs":
                 return self._send(200, {"prevs": BK.prevs()})
             if u.path == "/api/backup/manifest":
-                return self._send(200, BK.manifest(q.get("id")))
+                return self._send(200, BK.manifest(q.get("id"), q.get("loc")))
             if u.path == "/api/backup/report":
                 if not re.fullmatch(r"restore-[0-9-]+\.json", q.get("file") or ""):
                     return self._send(400, {"error": "neispravna datoteka"})
-                with open(BK.path(q.get("id"), q["file"]), encoding="utf-8") as f:
+                with open(BK.path(q.get("id"), q["file"], q.get("loc")), encoding="utf-8") as f:
                     return self._send(200, json.load(f))
             if u.path == "/api/backup/download":
                 bid = q.get("id") or ""
-                BK.manifest(bid)
+                BK.manifest(bid, q.get("loc"))
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-tar")
                 self.send_header("Content-Disposition", f'attachment; filename="jellyclean-{bid}.tar"')
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 try:
-                    BK.stream_download(bid, self.wfile)
+                    BK.stream_download(bid, self.wfile, q.get("loc"))
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 self.close_connection = True
@@ -5106,7 +5411,8 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         if u.path == "/api/backup/upload":
             try:
-                return self._send(200, BK.upload(self.rfile, int(self.headers.get("Content-Length") or 0)))
+                loc = (urllib.parse.parse_qs(u.query).get("loc") or ["local"])[0]
+                return self._send(200, BK.upload(self.rfile, int(self.headers.get("Content-Length") or 0), loc))
             except (ValueError, OSError, KeyError, tarfile.TarError) as e:
                 self.close_connection = True
                 return self._send(400, {"error": str(e)})
@@ -5193,13 +5499,25 @@ class Handler(BaseHTTPRequestHandler):
                                             "user": sv.cfg["ssh_user"], "host": sv.cfg["ssh_host"]})
                 return self._send(404, {"error": "Nepoznata radnja"})
             if u.path == "/api/backup/full":
-                return self._send(200, BK.start_full(body.get("stop", True), body.get("metadata", False)))
+                return self._send(200, BK.start_full(body.get("stop", True), body.get("metadata", False), body.get("loc") or "local"))
             if u.path == "/api/backup/users":
-                return self._send(200, BK.start_users(body.get("users")))
+                return self._send(200, BK.start_users(body.get("users"), body.get("loc") or "local"))
+            if u.path == "/api/backup/copy":
+                return self._send(200, BK.start_copy(body.get("id"), body.get("loc"), bool(body.get("move")), body.get("src_loc")))
+            if u.path == "/api/storage/exports":
+                return self._send(200, STORE.exports(body.get("host")))
+            if u.path == "/api/storage/test":
+                return self._send(200, STORE.test(body.get("src"), body.get("vers")))
+            if u.path == "/api/storage/add":
+                return self._send(200, STORE.add(body.get("name"), body.get("src"), body.get("vers"), body.get("subdir")))
+            if u.path == "/api/storage/remove":
+                return self._send(200, STORE.remove(body.get("id")))
+            if u.path == "/api/storage/mount":
+                return self._send(200, STORE.mount(body.get("id"), body.get("on", True)))
             if u.path == "/api/backup/restore":
-                return self._send(200, BK.start_restore(body.get("id"), body.get("target"), body.get("options")))
+                return self._send(200, BK.start_restore(body.get("id"), body.get("target"), body.get("options"), body.get("loc")))
             if u.path == "/api/backup/delete":
-                return self._send(200, BK.delete(body.get("id")))
+                return self._send(200, BK.delete(body.get("id"), body.get("loc")))
             if u.path == "/api/backup/cancel":
                 return self._send(200, BK.cancel())
             if u.path == "/api/backup/prevs/clean":

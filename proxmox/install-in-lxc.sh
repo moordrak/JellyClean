@@ -50,5 +50,6 @@ EOT
 mkdir -p /var/lib/jellyclean
 systemctl daemon-reload
 systemctl enable --now jellyclean
+bash "$DIR/proxmox/lxc-post-update.sh" || true
 IP=$(hostname -I | awk '{print $1}')
 echo ">> JellyClean radi na http://${IP}:$(grep -oP '^PORT=\K.*' /etc/jellyclean.env || echo 8095)"
