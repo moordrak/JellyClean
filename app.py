@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.3.1"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -4851,9 +4851,13 @@ class Storage:
         except subprocess.TimeoutExpired:
             raise ValueError("NAS ne odgovara (isteklo vrijeme)")
         err = (p.stderr or "").strip()
-        if "sudo:" in err:
-            raise ValueError("Servis nema sudo pravo za jellyclean-nas - u kontejneru pokreni: bash /opt/jellyclean/proxmox/lxc-post-update.sh")
         lines = (p.stdout or "").splitlines()
+        # sudo zna ispisati upozorenja i kad naredba uspije (npr. "unable to resolve host") - greška je samo ako nije uspjelo
+        if p.returncode != 0 and not lines and "sudo:" in err:
+            msg = next((l for l in err.splitlines() if l.startswith("sudo:")), err)[:200]
+            raise ValueError(f"Servis (korisnik {getpass.getuser()}) ne smije pokrenuti jellyclean-nas preko sudo ({msg}). "
+                             "U kontejneru JellyCleana kao root pokreni: bash /opt/jellyclean/proxmox/lxc-post-update.sh "
+                             "(s Proxmox hosta: pct exec <ID> -- bash /opt/jellyclean/proxmox/lxc-post-update.sh)")
         for l in lines:
             if l.startswith("ERR "):
                 raise ValueError(l[4:])
