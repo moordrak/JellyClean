@@ -1197,7 +1197,7 @@ async function svBoot(id){
   $('#svb-sub').textContent=x?x.name:''; $('#svb-body').innerHTML='<div class="sub">Pripremam…</div>'; $('#svboot').showModal();
   let r; try{ r=await api('/api/servers/bootstrap',{id}); }catch(e){ $('#svb-body').innerHTML=`<div class="note warn">${esc(e.message)}</div>`; return; }
   $('#svb-body').innerHTML=`
-    <p>Na računalu <b>${esc(r.host)}</b> (gdje radi Jellyfin) pokreni jednu od ovih naredbi kao korisnik sa sudo pravom. Traži sudo lozinku jednom i ne sprema je.</p>
+    <p>Na računalu <b>${esc(r.host)}</b>, <b>gdje radi Jellyfin</b> (ne u JellyClean LXC-u), pokreni jednu od ovih naredbi kao korisnik sa sudo pravom. Traži sudo lozinku jednom i ne sprema je.</p>
     <div class="svb-cmd"><code id="svb-c1">${esc(r.command)}</code><button class="btn" data-copy="svb-c1">Kopiraj</button></div>
     <div class="svb-cmd"><code id="svb-c2">${esc(r.wget)}</code><button class="btn" data-copy="svb-c2">Kopiraj</button></div>
     <p class="sub">Skripta: (1) dopusti JellyCleanovom SSH ključu prijavu kao <b>${esc(r.user)}</b>, (2) pronađe Jellyfin (Docker ili paket) i njegove mape, (3) postavi pomoćni program <code>/usr/local/sbin/jellyclean-helper</code> i sudo pravilo samo za njega. Poveznica vrijedi ${r.expires_min} min. Istu naredbu pokreni i kad JellyClean javi da je pomoćni program zastario.

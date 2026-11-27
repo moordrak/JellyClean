@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -1576,6 +1576,18 @@ HP=/usr/local/sbin/jellyclean-helper
 say() {{ printf '\\033[1;36m==>\\033[0m %s\\n' "$*"; }}
 die() {{ printf '\\033[1;31mGREŠKA:\\033[0m %s\\n' "$*" >&2; exit 1; }}
 [ "$(id -u)" = 0 ] || die "pokreni kao root (… | sudo sh)"
+WANT={q(c["ssh_host"])}
+if [ -f /etc/jellyclean.env ] || [ -d /opt/jellyclean ]; then
+  die "ovo je računalo na kojem radi JellyClean ($(hostname)). Naredbu pokreni na računalu s Jellyfinom: $WANT"
+fi
+case "$WANT" in
+  *[!0-9.]*|"") ;;
+  *) if command -v hostname >/dev/null 2>&1 && hostname -I >/dev/null 2>&1 && ! hostname -I | tr ' ' '\n' | grep -qxF "$WANT"; then
+       printf '\033[1;33mUPOZORENJE:\033[0m ovo računalo (%s: %s) nema adresu %s koja je upisana u JellyCleanu.\n' "$(hostname)" "$(hostname -I | xargs)" "$WANT" >&2
+       printf '             Ako Jellyfin radi na %s, prekini (Ctrl+C) i pokreni naredbu ondje. Nastavljam za 10 s…\n' "$WANT" >&2
+       sleep 10
+     fi ;;
+esac
 id "$U" >/dev/null 2>&1 || die "korisnik $U ne postoji na ovom računalu"
 
 say "1/3 SSH ključ JellyCleana za korisnika $U"
@@ -1596,7 +1608,7 @@ DET=$( (echo 'C=; CACHE=; LOG=; DATA=; META='; cat "$T/body.sh"; echo 'main dete
 gv() {{ printf '%s\\n' "$DET" | sed -n "s/^$1 //p" | head -1; }}
 C=${{IN_C:-$(gv D_CONFIG)}}; DATA=${{IN_DATA:-$(gv D_DATA)}}; CACHE=${{IN_CACHE:-$(gv D_CACHE)}}; LOG=${{IN_LOG:-$(gv D_LOG)}}
 META=${{IN_META:-${{DATA:+$DATA/metadata}}}}
-[ -n "$C" ] || die "Jellyfin nije pronađen (ni Docker kontejner ni paket). Upiši putanje u JellyCleanu pa pokreni ponovno."
+[ -n "$C" ] || die "na računalu $(hostname) Jellyfin nije pronađen (ni Docker kontejner s 'jellyfin' u nazivu ili imageu, ni paket u /var/lib/jellyfin). Ako je ovo pravo računalo, upiši putanje u JellyCleanu (Uredi → Putanje) pa pokreni ponovno."
 for x in "$C" "$CACHE" "$LOG" "$DATA" "$META"; do case "$x" in *"'"*|*..*|"") die "neispravna putanja: $x";; /*) ;; *) die "putanja nije apsolutna: $x";; esac; done
 echo "    izvor:    $(gv D_SRC)"
 echo "    config:   $C"; echo "    cache:    $CACHE"; echo "    logovi:   $LOG"; echo "    data:     $DATA"; echo "    metadata: $META"
