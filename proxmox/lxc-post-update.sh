@@ -36,6 +36,15 @@ if [ "$U" != root ]; then
   chmod 440 /etc/sudoers.d/jellyclean-nas.new
   if visudo -cf /etc/sudoers.d/jellyclean-nas.new >/dev/null 2>&1; then mv -f /etc/sudoers.d/jellyclean-nas.new /etc/sudoers.d/jellyclean-nas
   else rm -f /etc/sudoers.d/jellyclean-nas.new; echo "  ✘ sudoers pravilo nije ispravno"; exit 1; fi
+  # NoNewPrivileges=true u servisu blokira sudo (setuid) - za jellyclean-nas mora biti isključen
+  if [ "$(systemctl show -p NoNewPrivileges --value jellyclean 2>/dev/null)" = yes ]; then
+    mkdir -p /etc/systemd/system/jellyclean.service.d
+    printf '%s\n' "# JellyClean NFS pohrana: sudo za jellyclean-nas ne radi uz NoNewPrivileges" \
+                  "[Service]" "NoNewPrivileges=false" > /etc/systemd/system/jellyclean.service.d/10-nas-sudo.conf
+    systemctl daemon-reload
+    systemctl try-restart jellyclean 2>/dev/null || true
+    echo "  ✔ servis: NoNewPrivileges isključen (potrebno za sudo jellyclean-nas)"
+  fi
   # provjera: smije li servis stvarno pokrenuti pomoćni program
   if out=$(runuser -u "$U" -- sudo -n /usr/local/sbin/jellyclean-nas version 2>&1) && [[ $out == *NASVER* ]]; then
     echo "  ✔ $U smije pokretati jellyclean-nas"

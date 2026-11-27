@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "2.3.1"
+APP_VERSION = "2.3.2"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -4855,6 +4855,10 @@ class Storage:
         # sudo zna ispisati upozorenja i kad naredba uspije (npr. "unable to resolve host") - greška je samo ako nije uspjelo
         if p.returncode != 0 and not lines and "sudo:" in err:
             msg = next((l for l in err.splitlines() if l.startswith("sudo:")), err)[:200]
+            if "no new privileges" in err.lower():
+                raise ValueError("Servis JellyClean radi s NoNewPrivileges=true pa sudo ne radi. "
+                                 "S Proxmox hosta pokreni: pct exec <ID> -- bash /opt/jellyclean/proxmox/lxc-post-update.sh "
+                                 "(isključuje to za servis i ponovno ga pokreće)")
             raise ValueError(f"Servis (korisnik {getpass.getuser()}) ne smije pokrenuti jellyclean-nas preko sudo ({msg}). "
                              "U kontejneru JellyCleana kao root pokreni: bash /opt/jellyclean/proxmox/lxc-post-update.sh "
                              "(s Proxmox hosta: pct exec <ID> -- bash /opt/jellyclean/proxmox/lxc-post-update.sh)")

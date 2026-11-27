@@ -1138,7 +1138,7 @@ Group=$RUN_GID
 ExecStart=/usr/bin/python3 $APP_DIR/app.py
 Restart=on-failure
 RestartSec=10
-NoNewPrivileges=true
+# NoNewPrivileges ne smije biti uključen: NFS pohrana koristi sudo jellyclean-nas
 
 [Install]
 WantedBy=multi-user.target
