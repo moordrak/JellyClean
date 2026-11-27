@@ -1407,7 +1407,7 @@ function renderBkFull(){
     <span>Jellyfin</span><span>${esc(f.ctl_name||'?')} <span class="sub">(${esc((f.ctl||'nepoznato').split(':')[0])})</span></span>
     <span>Mjesto u JellyCleanu</span><span>${fsz(r.local_disk&&r.local_disk.free)} slobodno</span>
   </div>
-  <label class="bk-opt"><input type="checkbox" id="bk-stop" checked ${f.ctl?'':'disabled'}><span>Zaustavi Jellyfin tijekom kopiranja<small>Preporučeno - baza se kopira u dosljednom stanju. Jellyfin je nedostupan dok traje pakiranje.</small></span></label>
+  <label class="bk-opt"><input type="checkbox" id="bk-stop" checked ${f.ctl?'':'disabled'}><span>Zaustavi Jellyfin tijekom kopiranja<small>Najsigurnije, ali Jellyfin je nedostupan dok traje pakiranje. Bez zaustavljanja baze (i statistika gledanja) kopiraju se preko SQLite backupa, pa su i tada u dosljednom stanju.</small></span></label>
   <label class="bk-opt"><input type="checkbox" id="bk-meta"><span>Uključi metapodatke i slike (+${fsz(sz.metadata)})<small>Bez njih Jellyfin nakon vraćanja ponovno preuzme postere i opise s interneta.</small></span></label>
   ${f.tar===false?'<div class="note warn">Na Jellyfin računalu nema tar/gzip.</div>':''}
   <div class="toolbar" style="margin:12px 0 0"><button class="btn primary" id="bk-go-full">Napravi puni backup</button><span class="sub" id="bk-est"></span></div>`;

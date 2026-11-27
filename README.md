@@ -250,7 +250,8 @@ Kartica **Backup i restore** radi dvije vrste sigurnosnih kopija. Spremaju se **
 
 Sprema **sve** iz Jellyfinove mape: bazu (`jellyfin.db`), postavke (`*.xml`), korisnike i lozinke, ključeve uređaja, pluginove i njihove postavke, biblioteke (`root/`) i **statistiku gledanja** (`playback_reporting.db` plugina Playback Reporting). Po želji sprema i metapodatke i slike. Cache, logovi i privremene datoteke transkodiranja se ne spremaju.
 
-- Jellyfin se tijekom pakiranja **zaustavi** (preporučeno, za dosljednu bazu), a zatim ponovno pokrene.
+- Jellyfin se tijekom pakiranja **zaustavi** (preporučeno), a zatim ponovno pokrene.
+- **Bez zaustavljanja**: SQLite baze (`jellyfin.db`, `playback_reporting.db`, baze pluginova) ne kopiraju se izravno, nego preko SQLite online backupa (`python3` ili `sqlite3` na Jellyfin računalu) s provjerom `quick_check`. Kopija je dosljedna iako Jellyfin za to vrijeme piše u bazu. Ako backup jedne baze ne uspije, ona se kopira izravno i javlja se upozorenje.
 - **Vraćanje na isti server**: Jellyfin se zaustavi, trenutni podaci se premjeste u `.jellyclean-restore-<vrijeme>/prev` u Jellyfinovoj mapi, kopija se raspakira, vlasnik datoteka se postavi kao prije i Jellyfin se pokrene. Stari podaci ostaju dok ih ne obrišeš (*Podaci prije vraćanja → Obriši sve*).
 - **Vraćanje na drugi server** (prvo ga dodaj na kartici *Serveri*): isto, a uz to:
   - putanje u postavkama i pluginovima prilagode se odredištu (npr. Docker `/config/data` → `/var/lib/jellyfin`), prema `/System/Info` obaju servera

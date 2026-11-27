@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "2.3.2"
+APP_VERSION = "2.4.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -1036,7 +1036,7 @@ import subprocess
 HEX32 = re.compile(r"^[0-9a-f]{32}$")
 
 
-HELPER_VERSION = 11
+HELPER_VERSION = 12
 
 # NVENC patch: keylase/nvidia-patch, zakucana provjerena verzija. Skripta se ne sprema u ovaj
 # repozitorij (nema licence za redistribuciju) - preuzima se s GitHuba i provjerava sha256 ovdje
@@ -1488,6 +1488,38 @@ op_bkinfo() {
   if command -v tar >/dev/null 2>&1 && command -v gzip >/dev/null 2>&1; then echo "TAR 1"; else echo "TAR 0"; fi
   n=0; for d in "$DATA"/.jellyclean-restore-*; do [ -d "$d" ] && n=$((n + 1)); done; echo "PREVS $n"
 }
+# Dosljedna kopija SQLite baze dok Jellyfin radi (SQLite online backup API).
+# Ne dira bazu; ako čitanje stvori -wal/-shm, vraća im vlasnika baze (inače Jellyfin ne bi mogao pisati).
+snap_db() {
+  src=$1; dst=$2; hadw=0; hads=0
+  [ -e "$src-wal" ] && hadw=1; [ -e "$src-shm" ] && hads=1
+  rc=1
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$src" "$dst" <<'PYSNAP' 2>"$dst.err"; rc=$?
+import sqlite3, sys
+s = sqlite3.connect(sys.argv[1], timeout=60)
+d = sqlite3.connect(sys.argv[2])
+s.backup(d, pages=2048, sleep=0.05)
+s.close()
+r = d.execute("PRAGMA quick_check").fetchone()[0]
+d.execute("PRAGMA journal_mode=DELETE")
+d.close()
+if r != "ok":
+    print("quick_check: " + r, file=sys.stderr); sys.exit(2)
+PYSNAP
+  elif command -v sqlite3 >/dev/null 2>&1; then
+    sqlite3 "$src" ".timeout 60000" ".backup '$dst'" 2>"$dst.err"; rc=$?
+  else
+    echo "nema python3 ni sqlite3" > "$dst.err"; rc=9
+  fi
+  [ $hadw = 0 ] && [ -e "$src-wal" ] && chown --reference="$src" "$src-wal" 2>/dev/null
+  [ $hads = 0 ] && [ -e "$src-shm" ] && chown --reference="$src" "$src-shm" 2>/dev/null
+  if [ $rc = 0 ]; then
+    chown --reference="$src" "$dst" 2>/dev/null; chmod --reference="$src" "$dst" 2>/dev/null; touch -r "$src" "$dst" 2>/dev/null
+    rm -f "$dst.err"; return 0
+  fi
+  SNAPERR=$(head -c 200 "$dst.err" 2>/dev/null | tr '\n' ' '); rm -f "$dst" "$dst.err"; return 1
+}
 op_backup() {
   stop=${1:-1}; meta=${2:-0}
   jf_find_ctl; jf_confdir; jf_db
@@ -1514,9 +1546,43 @@ op_backup() {
   if [ "$stop" = 1 ] && [ -n "$JCTL" ]; then
     if jf_ctl stop; then stopped=1; echo "INFO STOPPED $JNAME" >&2; sleep 3; else echo "WARN Jellyfin ($JNAME) se nije zaustavio - kopija se radi dok radi" >&2; fi
   fi
+  SNAPX=""
+  if [ $stopped = 0 ]; then
+    # Jellyfin radi: baze se ne kopiraju izravno nego preko SQLite backupa (dosljedno stanje)
+    dbs=$( { find "$DATA" -maxdepth 3 \( -path "$DATA/cache" -o -path "$DATA/metadata" -o -path "$DATA/transcodes" -o -path "$DATA/log" -o -path "$DATA/.jellyclean-*" \) -prune -o -type f -name '*.db' -print 2>/dev/null
+             [ "$JCONF" != "$DATA" ] && find "$JCONF" -maxdepth 2 -type f -name '*.db' -print 2>/dev/null; } | sort -u)
+    OIFS=$IFS; IFS='
+'
+    need=0; for f in $dbs; do need=$((need + $(stat -c %s "$f" 2>/dev/null || echo 0))); done
+    free=$(df -B1 -P "$S" 2>/dev/null | awk 'NR==2{print $4}')
+    if [ -n "$free" ] && [ "$free" -gt $((need + need / 5 + 50000000)) ]; then SD="$S/snap.d"; mkdir -p "$SD"
+    else SD=$(mktemp -d -p "$DATA" .jellyclean-snap.XXXXXX) || SD=""; SNAPX=$SD; fi
+    if [ -z "$SD" ]; then
+      IFS=$OIFS; echo "WARN nema mjesta za kopiju baza - baze se kopiraju dok Jellyfin radi (moguća nedosljednost)" >&2
+    else
+      ln -s "$SD" "$S/snap"
+      set -- "$@" --anchored
+      ok=0; bad=0
+      for f in $dbs; do
+        case "$f" in "$DATA"/*) m="data/${f#"$DATA"/}" ;; "$JCONF"/*) m="config/${f#"$JCONF"/}" ;; *) continue ;; esac
+        mkdir -p "$SD/$(dirname "$m")"
+        if snap_db "$f" "$SD/$m"; then
+          set -- "$@" "--exclude=$m" "--exclude=$m-wal" "--exclude=$m-shm" "--exclude=$m-journal"
+          parts="$parts snap/$m"; ok=$((ok + 1))
+        else
+          bad=$((bad + 1)); echo "WARN $(basename "$f"): dosljedna kopija nije uspjela ($SNAPERR) - kopira se izravno" >&2
+        fi
+      done
+      set -- "$@" --no-anchored "--transform=s,^snap/,,"
+      IFS=$OIFS
+      echo "INFO SNAP $ok $bad" >&2
+    fi
+  fi
+  [ -n "$SNAPX" ] && set -- --exclude='.jellyclean-snap.*' "$@"
   echo "INFO TAR $JCONF $DATA" >&2
   # shellcheck disable=SC2086
   tar -C "$S" -czhf - "$@" $parts 2>"$S.err"; rc=$?
+  [ -n "$SNAPX" ] && rm -rf "$SNAPX"
   if [ $stopped = 1 ]; then
     if jf_ctl start; then echo "INFO STARTED $JNAME" >&2; else echo "WARN Jellyfin ($JNAME) se nije ponovno pokrenuo - pokreni ga ručno" >&2; fi
   fi
@@ -4233,6 +4299,7 @@ class Backups:
             self._phase("Zaustavljam Jellyfin i pakiram podatke…" if stop else "Pakiram podatke (Jellyfin radi)…")
             cmd, stdin = self._ssh_cmd("backup", (1 if stop else 0, 1 if meta else 0))
             errlines = []
+            snapinfo = None
             with open(os.path.join(d, "full.tar.gz"), "wb") as out:
                 self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=out, stderr=subprocess.PIPE)
                 try:
@@ -4243,7 +4310,11 @@ class Backups:
                 for raw in self.proc.stderr:
                     line = raw.decode("utf-8", "replace").rstrip()
                     errlines.append(line)
-                    if line.startswith("INFO STOPPED"):
+                    if line.startswith("INFO SNAP"):
+                        okn = line.split()[2] if len(line.split()) > 2 else "?"
+                        self._phase(f"Baze kopirane u dosljednom stanju ({okn}), pakiram…")
+                        snapinfo = line.split()[2:4]
+                    elif line.startswith("INFO STOPPED"):
                         self._phase("Jellyfin zaustavljen, pakiram…")
                     elif line.startswith("INFO STARTED"):
                         self._phase("Jellyfin ponovno pokrenut")
@@ -4266,7 +4337,8 @@ class Backups:
                 raise ValueError("U arhivi nema Jellyfin baze")
             m = {"id": bid, "kind": "full", "created": now_iso(), "app": APP_VERSION,
                  "server": {"id": srv.id, "name": srv.name, "url": CFG["jf_url"], "ssh_host": CFG["ssh_host"]},
-                 "jellyfin": jm, "options": {"stopped": stop, "metadata": meta},
+                 "jellyfin": jm, "options": {"stopped": stop, "metadata": meta,
+                             "db_snapshot": ({"ok": int(snapinfo[0]), "failed": int(snapinfo[1])} if snapinfo and len(snapinfo) == 2 else None)},
                  "contents": {"files": len(names), "stats": stats, "plugins": sum(1 for n in names if "/plugins/" in n and n.endswith(".dll")),
                               "metadata": meta}, "archive_size": size}
             with open(os.path.join(d, "manifest.json"), "w", encoding="utf-8") as f:
