@@ -310,3 +310,10 @@ bash /opt/jellyclean/proxmox/lxc-post-update.sh
 - *Spremi na* nudi sva mjesta pohrane kao kvačice. Zadano je odabran **prvi montirani NAS**, a ako NAS-a nema, lokalno spremište. Tvoj odabir se pamti u pregledniku.
 - Ako odabereš više mjesta, kopija se radi na prvo (označeno *prvo*), a zatim se kopira na ostala. Ako kopiranje na neko mjesto ne uspije (npr. nema mjesta), sigurnosna kopija ostaje spremljena, a posao je označen kao *djelomično* s popisom grešaka.
 
+## Dnevnik
+
+- Kartica **Dnevnik** (Održavanje) prikazuje zapis rada JellyCleana i osvježava se uživo. Možeš ga filtrirati, preuzeti i obrisati.
+- Zapis u datoteku je zadano uključen: `/var/lib/jellyclean/logs/jellyclean.log`. Kad datoteka dosegne **1 MB**, rotira se (`jellyclean.log.1`, `.2`, …). Broj starih datoteka koje se čuvaju bira se u sučelju (1–20, zadano 5).
+- **Detaljno**: svaki upit prema Jellyfinu zapisuje se s trajanjem i veličinom odgovora. Korisno je kad nešto traje predugo.
+- Koraci backupa i restorea također se zapisuju u dnevnik.
+

@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "2.6.1"
+APP_VERSION = "2.7.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -206,8 +206,133 @@ RAR_RE = re.compile(r"\.(rar|r\d\d|zip|7z)$", re.I)
 # --------------------------------------------------------------------------
 
 
+def _dbg_params(p):
+    if not p:
+        return ""
+    return " ".join(f"{k}={str(v)[:60]}" for k, v in p.items() if k.lower() not in ("api_key", "apikey", "token"))
+
+
+class FileLog:
+    """Dnevnik u datoteci DATA_DIR/logs/jellyclean.log, rotacija na 1 MB (jellyclean.log.1 … .N)."""
+    MAX = 1024 * 1024
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.dir = None
+        self.cfg = {"enabled": True, "debug": False, "keep": 5}
+
+    def setup(self, data_dir):
+        self.dir = os.path.join(data_dir, "logs")
+        try:
+            with open(os.path.join(data_dir, "logging.json"), encoding="utf-8") as f:
+                self.cfg.update({k: v for k, v in json.load(f).items() if k in self.cfg})
+        except (OSError, ValueError):
+            pass
+        self.cfg["keep"] = max(1, min(20, int(self.cfg.get("keep") or 5)))
+
+    @property
+    def file(self):
+        return os.path.join(self.dir, "jellyclean.log") if self.dir else None
+
+    def save(self, data_dir, **kw):
+        for k in ("enabled", "debug"):
+            if k in kw:
+                self.cfg[k] = bool(kw[k])
+        if "keep" in kw:
+            self.cfg["keep"] = max(1, min(20, int(kw["keep"])))
+        os.makedirs(data_dir, exist_ok=True)
+        with open(os.path.join(data_dir, "logging.json"), "w", encoding="utf-8") as f:
+            json.dump(self.cfg, f)
+        with self.lock:
+            self._trim()
+
+    def _trim(self):
+        n = self.cfg["keep"] + 1
+        while self.file and os.path.exists(f"{self.file}.{n}"):
+            try:
+                os.remove(f"{self.file}.{n}")
+            except OSError:
+                break
+            n += 1
+
+    def _rotate(self):
+        k = self.cfg["keep"]
+        for i in range(k - 1, 0, -1):
+            if os.path.exists(f"{self.file}.{i}"):
+                os.replace(f"{self.file}.{i}", f"{self.file}.{i + 1}")
+        os.replace(self.file, f"{self.file}.1")
+        self._trim()
+
+    def write(self, line):
+        if not (self.dir and self.cfg["enabled"]):
+            return
+        data = (line + "\n").encode("utf-8", "replace")
+        with self.lock:
+            try:
+                os.makedirs(self.dir, mode=0o750, exist_ok=True)
+                try:
+                    if os.path.getsize(self.file) + len(data) > self.MAX:
+                        self._rotate()
+                except FileNotFoundError:
+                    pass
+                with open(self.file, "ab") as f:
+                    f.write(data)
+            except OSError:
+                pass
+
+    def files(self):
+        """Datoteke od najstarije prema najnovijoj."""
+        if not self.dir:
+            return []
+        out = [f"{self.file}.{i}" for i in range(self.cfg["keep"], 0, -1) if os.path.exists(f"{self.file}.{i}")]
+        if os.path.exists(self.file):
+            out.append(self.file)
+        return out
+
+    def tail(self, lines=500, q=""):
+        q = (q or "").lower()
+        buf = []
+        for fn in reversed(self.files()):
+            try:
+                with open(fn, encoding="utf-8", errors="replace") as f:
+                    part = f.read().splitlines()
+            except OSError:
+                continue
+            if q:
+                part = [l for l in part if q in l.lower()]
+            buf = part + buf
+            if len(buf) >= lines:
+                break
+        return buf[-lines:]
+
+    def clear(self):
+        with self.lock:
+            for fn in self.files():
+                try:
+                    os.remove(fn)
+                except OSError:
+                    pass
+
+    def info(self):
+        fs = self.files()
+        return {**self.cfg, "max_bytes": self.MAX, "path": self.file, "files": len(fs),
+                "size": sum(os.path.getsize(f) for f in fs if os.path.exists(f))}
+
+
+FLOG = FileLog()
+FLOG.setup(_GCFG["data_dir"])
+
+
 def log(*a):
-    print(time.strftime("[%Y-%m-%d %H:%M:%S]"), *a, flush=True)
+    line = time.strftime("[%Y-%m-%d %H:%M:%S] ") + " ".join(str(x) for x in a)
+    print(line, flush=True)
+    FLOG.write(line)
+
+
+def dbg(*a):
+    """Detaljni zapis (samo u datoteku, kad je uključeno detaljno logiranje)."""
+    if FLOG.cfg["debug"]:
+        FLOG.write(time.strftime("[%Y-%m-%d %H:%M:%S] ") + "DEBUG " + " ".join(str(x) for x in a))
 
 
 def now_iso():
@@ -767,8 +892,15 @@ class Jellyfin:
         if url.startswith("https") and not CFG["verify_tls"]:
             import ssl
             ctx = ssl._create_unverified_context()
-        with urllib.request.urlopen(r, timeout=timeout, context=ctx) as resp:
-            raw = resp.read()
+        t0 = time.monotonic()
+        try:
+            with urllib.request.urlopen(r, timeout=timeout, context=ctx) as resp:
+                raw = resp.read()
+        except Exception as e:
+            dbg(f"Jellyfin {method} {path} {_dbg_params(params)} → greška nakon {time.monotonic() - t0:.2f}s: {e}")
+            raise
+        dbg(f"Jellyfin {method} {path} {_dbg_params(params)} → {len(raw)} B, {time.monotonic() - t0:.2f}s")
+        if True:
             if not raw:
                 return None
             try:
@@ -4033,6 +4165,7 @@ import tarfile
 
 BK_ID_RE = re.compile(r"^[0-9]{8}-[0-9]{6}-(full|users)-[a-z0-9-]{1,40}$")
 BK_FILES = {"manifest.json", "full.tar.gz", "users.json"}
+BK_PAGE = 2000
 BK_ITEM_TYPES = "Movie,Episode,Series,Season,Audio,MusicAlbum,MusicVideo,Video,BoxSet"
 
 
@@ -4190,6 +4323,7 @@ class Backups:
             if progress is not None:
                 self.job["progress"] = progress
             self.job["log"].append(f"{time.strftime('%H:%M:%S')} {txt}")
+            FLOG.write(time.strftime("[%Y-%m-%d %H:%M:%S] ") + f"{self.job.get('title', 'Backup')} · {txt}")
             self.job["log"] = self.job["log"][-200:]
 
     def _check(self):
@@ -4407,19 +4541,33 @@ class Backups:
         return self._start("users", f"Korisnički backup: {srv.name} → {self._dest_title(L, extra)}",
                            lambda: self._with_copies(lambda: self._users(srv, user_ids or [], L["id"]), L, extra), srv)
 
-    def _items(self, uid, extra):
-        out, start = [], 0
+    def _items(self, uid, extra, label=""):
+        """Sve stavke korisnika za filtar. Velike stranice i bez brojanja ukupnog broja:
+        Jellyfin svaku stranicu računa iznova (OFFSET), pa je manje stranica = puno brže."""
+        out, start, t0, pages = [], 0, time.monotonic(), 0
         while True:
             self._check()
-            params = dict(Recursive="true", IncludeItemTypes=BK_ITEM_TYPES, EnableUserData="true", StartIndex=start, Limit=500,
+            params = dict(Recursive="true", IncludeItemTypes=BK_ITEM_TYPES, EnableUserData="true", StartIndex=start, Limit=BK_PAGE,
+                          EnableTotalRecordCount="false", EnableImages="false", ImageTypeLimit=0, UserId=uid,
                           Fields="ProviderIds,Path,ProductionYear,ParentIndexNumber,IndexNumber,SeriesId,SeriesName,MediaType")
             params.update(extra)
-            r = JF.req("GET", f"/Users/{uid}/Items", params, timeout=180) or {}
+            r = JF.req("GET", "/Items", params, timeout=300) or {}
             items = r.get("Items") or []
+            pages += 1
             out += items
             start += len(items)
-            if not items or start >= (r.get("TotalRecordCount") or 0):
-                return out
+            if label:
+                with self.lock:
+                    self.job["phase"] = f"{label}: {len(out)} stavki…"
+            if len(items) < BK_PAGE:
+                break
+        if label:
+            self._phase(f"{label}: {len(out)} stavki, {time.monotonic() - t0:.1f} s ({pages} upit{'a' if pages > 1 else ''})")
+        return out
+
+    def _items_ctx(self, srv, uid, extra, label):
+        with use_server(srv):
+            return self._items(uid, extra, label)
 
     @staticmethod
     def _key(it):
@@ -4442,10 +4590,15 @@ class Backups:
             series_ids, data = set(), []
             for n, u in enumerate(users, 1):
                 self._phase(f"Korisnik {u['Name']} ({n}/{len(users)})…", {"done": n - 1, "total": len(users)})
-                seen = {}
-                for flt in ("IsPlayed", "IsFavorite", "IsResumable", "Likes", "Dislikes"):
-                    for it in self._items(u["Id"], {"Filters": flt}):
-                        seen[it["Id"]] = it
+                seen, tu = {}, time.monotonic()
+                names = {"IsPlayed": "odgledano", "IsFavorite": "favoriti", "IsResumable": "započeto", "Likes": "sviđa se", "Dislikes": "ne sviđa se"}
+                # filtri se dohvaćaju istovremeno (Jellyfin ih obrađuje paralelno)
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=3) as ex:
+                    futs = [ex.submit(self._items_ctx, srv, u["Id"], {"Filters": f}, f"{u['Name']} · {names[f]}") for f in names]
+                    for fu in futs:
+                        for it in fu.result():
+                            seen[it["Id"]] = it
                 items, playlists = [], []
                 for it in seen.values():
                     if it.get("Type") == "Playlist":
@@ -4457,7 +4610,7 @@ class Backups:
                     if it.get("SeriesId"):
                         series_ids.add(it["SeriesId"])
                     items.append(k)
-                for pl in self._items(u["Id"], {"IncludeItemTypes": "Playlist"}):
+                for pl in self._items(u["Id"], {"IncludeItemTypes": "Playlist"}, f"{u['Name']} · playliste"):
                     if pl.get("Type") != "Playlist":
                         continue
                     self._check()
@@ -4471,14 +4624,14 @@ class Backups:
                 full = JF.req("GET", f"/Users/{u['Id']}") or u
                 data.append({"id": u["Id"], "name": u["Name"], "configuration": full.get("Configuration"),
                              "policy": full.get("Policy"), "items": items, "playlists": playlists})
-                self._phase(f"Korisnik {u['Name']}: {len(items)} stavki, {len(playlists)} playlista")
+                self._phase(f"Korisnik {u['Name']}: {len(items)} stavki, {len(playlists)} playlista ({time.monotonic() - tu:.1f} s)")
             # oznake serija (za prepoznavanje epizoda na drugom serveru)
             # Ne preko ?Ids=… (na novijem Jellyfinu upit s puno ID-ova zna trajati jako dugo), nego popis svih serija u stranicama.
             series, start, total = {}, 0, None
             self._phase(f"Oznake serija ({len(series_ids)})…", {"done": 0, "total": len(series_ids)})
             while series_ids and len(series) < len(series_ids):
                 self._check()
-                r = JF.req("GET", "/Items", {"Recursive": "true", "IncludeItemTypes": "Series", "StartIndex": start, "Limit": 300,
+                r = JF.req("GET", "/Items", {"Recursive": "true", "IncludeItemTypes": "Series", "StartIndex": start, "Limit": BK_PAGE,
                                              "Fields": "ProviderIds,Path,ProductionYear", "EnableImages": "false",
                                              "EnableUserData": "false", "SortBy": "SortName"}, timeout=120) or {}
                 page = r.get("Items") or []
@@ -4607,7 +4760,8 @@ class Backups:
         while True:
             self._check()
             r = JF.req("GET", f"/Users/{admin}/Items", dict(
-                Recursive="true", IncludeItemTypes=BK_ITEM_TYPES, StartIndex=start, Limit=1000, EnableUserData="false",
+                Recursive="true", IncludeItemTypes=BK_ITEM_TYPES, StartIndex=start, Limit=BK_PAGE, EnableUserData="false",
+                EnableImages="false", ImageTypeLimit=0,
                 Fields="ProviderIds,Path,ProductionYear,ParentIndexNumber,IndexNumber,SeriesId"), timeout=300) or {}
             items = r.get("Items") or []
             for it in items:
@@ -5628,6 +5782,23 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, f.read(), "text/html; charset=utf-8")
             if u.path == "/api/account":
                 return self._send(200, AUTH.info())
+            if u.path == "/api/logs":
+                n = max(50, min(5000, int(q.get("lines") or 500)))
+                return self._send(200, {**FLOG.info(), "lines": FLOG.tail(n, q.get("q"))})
+            if u.path == "/api/logs/download":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Disposition", f'attachment; filename="jellyclean-{time.strftime("%Y%m%d-%H%M")}.log"')
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                for fn in FLOG.files():
+                    try:
+                        with open(fn, "rb") as f:
+                            shutil.copyfileobj(f, self.wfile)
+                    except (OSError, BrokenPipeError, ConnectionResetError):
+                        break
+                self.close_connection = True
+                return
             if u.path == "/api/storage":
                 return self._send(200, STORE.status())
             if u.path == "/api/backup":
@@ -5771,6 +5942,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True}, headers=[("Set-Cookie", self._set_cookie("", 0))])
         if not self._auth_ok():
             return self._deny()
+        if u.path == "/api/logs/settings":
+            try:
+                body = self._body()
+                FLOG.save(CFG["data_dir"], **{k: body[k] for k in ("enabled", "debug", "keep") if k in body})
+            except (ValueError, OSError, TypeError) as e:
+                return self._send(400, {"error": str(e)})
+            log(f"Dnevnik: zapis u datoteku {'uključen' if FLOG.cfg['enabled'] else 'isključen'}, "
+                f"detaljno {'da' if FLOG.cfg['debug'] else 'ne'}, čuva se {FLOG.cfg['keep']} starih datoteka")
+            return self._send(200, FLOG.info())
+        if u.path == "/api/logs/clear":
+            FLOG.clear()
+            log("Dnevnik: obrisan iz sučelja")
+            return self._send(200, FLOG.info())
         if u.path == "/api/account/password":
             try:
                 body = self._body()

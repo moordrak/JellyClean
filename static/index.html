@@ -289,7 +289,19 @@ header{gap:12px}
 .bk-job{border:1px solid var(--accent);background:rgba(0,164,220,.06);border-radius:10px;padding:14px 16px;margin-bottom:16px}
 .bk-job.err{border-color:var(--bad);background:rgba(248,81,73,.06)}
 .bk-job.ok{border-color:var(--ok);background:rgba(63,185,80,.06)}
-.bk-job pre{font-family:var(--mono);font-size:12px;max-height:160px;overflow:auto;margin:10px 0 0;color:var(--muted);white-space:pre-wrap}
+.bk-job pre{font-family:var(--mono);font-size:12px;max-height:220px;overflow:auto;margin:6px 0 0;color:var(--muted);white-space:pre-wrap;background:rgba(0,0,0,.25);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.bk-logh{display:flex;align-items:center;gap:8px;margin-top:10px}
+.bk-logh button{background:none;border:0;color:var(--muted);cursor:pointer;font:inherit;font-size:12.5px;padding:0}
+.bk-logh button:hover{color:var(--text)}
+.lg-set{display:flex;flex-direction:column;gap:12px}
+.lg-sw{display:flex;gap:10px;align-items:flex-start;cursor:pointer}
+.lg-sw input{margin-top:3px;accent-color:var(--accent)}
+.lg-sw small,.lg-keep small{display:block;color:var(--muted);font-size:12px}
+.lg-keep{display:flex;gap:10px;align-items:center;color:var(--text)}
+.lg-keep small{display:inline}
+.lg-keep select,#lg-n,#lg-q{background:var(--panel2);border:1px solid var(--line);color:var(--text);padding:6px 9px;border-radius:7px;font:inherit}
+.lg-view{font-family:var(--mono);font-size:12px;line-height:1.5;background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:10px;padding:10px 12px;height:calc(100vh - 430px);min-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:10px 0 0;color:#c9ced8}
+.lg-view .d{color:var(--muted)} .lg-view .e{color:var(--bad)} .lg-view .w{color:var(--warn)} .lg-view .t{color:#6e7681}
 .bk-kind{font-size:11px;padding:1px 7px;border-radius:9px;border:1px solid var(--line)}
 .bk-kind.full{color:#7fd6f5;border-color:#1d5a73}.bk-kind.users{color:#d6a8e6;border-color:#5b3466}
 #bk-table td .sub{display:block}
@@ -343,6 +355,7 @@ a.btn{text-decoration:none;display:inline-block}
     <button data-tab="backup" title="Sigurnosne kopije Jellyfina"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v5c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg><span>Backup i restore</span></button>
     <button data-tab="migrate" title="Migracija Jellyfina iz Dockera u Proxmox LXC"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="7" height="14" rx="1.5"/><rect x="14" y="5" width="7" height="14" rx="1.5"/><path d="M8 12h8M13.5 9.5L16 12l-2.5 2.5"/></svg><span>Migracija</span></button>
     <button data-tab="servers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg><span>Serveri</span></button>
+    <button data-tab="logs" title="Dnevnik rada JellyCleana"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6M9 9h2"/></svg><span>Dnevnik</span></button>
   </nav>
 </aside>
 <main>
@@ -538,6 +551,25 @@ a.btn{text-decoration:none;display:inline-block}
   <div class="tab-head"><h2>Jellyfin serveri</h2><p>Svi serveri koriste iste medije. Kartice Jellyfin, Provjera putanja, Jellyfin config i Test enkodiranja prikazuju server odabran u zaglavlju.</p></div>
   <div class="toolbar"><button class="btn primary" id="sv-add">+ Dodaj server</button><span class="sub" id="sv-sum"></span></div>
   <div id="sv-list" class="sv-grid"></div>
+</section>
+
+<!-- DNEVNIK -->
+<section class="tab" id="tab-logs">
+  <div class="tab-head"><h2>Dnevnik</h2><p>Zapis rada JellyCleana u datoteku, s rotacijom na 1 MB</p></div>
+  <div class="card lg-set">
+    <label class="lg-sw"><input type="checkbox" id="lg-en"><span><b>Zapisuj dnevnik u datoteku</b><small id="lg-path"></small></span></label>
+    <label class="lg-sw"><input type="checkbox" id="lg-dbg"><span><b>Detaljno</b><small>svaki upit prema Jellyfinu s trajanjem i veličinom odgovora, korisno za traženje sporih dijelova</small></span></label>
+    <label class="lg-keep">Čuvaj starih datoteka <select id="lg-keep"><option>1</option><option>2</option><option>3</option><option>5</option><option>10</option><option>20</option></select><small>svaka do 1 MB</small></label>
+    <div class="sub" id="lg-info"></div>
+  </div>
+  <div class="toolbar" style="margin-top:14px">
+    <input id="lg-q" placeholder="Filtriraj (npr. Backup, DEBUG, greška)…" style="flex:1;min-width:220px">
+    <select id="lg-n"><option value="200">200 redaka</option><option value="500" selected>500 redaka</option><option value="2000">2000 redaka</option><option value="5000">5000 redaka</option></select>
+    <label><input type="checkbox" id="lg-live" checked> uživo</label>
+    <a class="btn" id="lg-dl" href="/api/logs/download">Preuzmi</a>
+    <button class="btn danger" id="lg-clear">Obriši</button>
+  </div>
+  <pre class="lg-view" id="lg-view"></pre>
 </section>
 
 <!-- BACKUP -->
@@ -791,7 +823,7 @@ $$('#nav button').forEach(b=>b.onclick=()=>{
   try{ b.scrollIntoView({block:'nearest',inline:'nearest'}); }catch(e){}
 });
 function refreshCurrent(){
-  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash, jfconfig:()=>loadJc(false), paths:loadPc, enctest:()=>{ loadEt(); loadNvp(); gmStart(); }, servers:loadSv, backup:loadBk, migrate:()=>loadPve(true)}[current]||(()=>{}))();
+  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash, jfconfig:()=>loadJc(false), paths:loadPc, enctest:()=>{ loadEt(); loadNvp(); gmStart(); }, servers:loadSv, logs:loadLogs, backup:loadBk, migrate:()=>loadPve(true)}[current]||(()=>{}))();
 }
 
 // ---------------- pregled ----------------
@@ -1683,6 +1715,7 @@ function bkRestoreDlg(id, loc){
   $('#bkdlg').showModal();
 }
 $('#bkd-close').onclick=()=>$('#bkdlg').close();
+let BK_LOG_OPEN=true; try{ BK_LOG_OPEN=localStorage.getItem('jc-bk-log')!=='0'; }catch(e){}
 function renderBkJob(){
   const j=(BKS.data||{}).job, box=$('#bk-job');
   if(!j){ box.innerHTML=''; return; }
@@ -1717,8 +1750,14 @@ function renderBkJob(){
       if(r.copy_errors&&r.copy_errors.length) h+=`<div class="note warn" style="margin:8px 0 0">Sigurnosna kopija je spremljena, ali kopiranje nije uspjelo na:<br>${r.copy_errors.map(esc).join('<br>')}<br>Možeš je naknadno kopirati gumbom „Na…” u popisu.</div>`;
     }
   }
-  if(j.log && j.log.length) h+=`<details${j.running?'':' open'}><summary class="sub" style="cursor:pointer;margin-top:8px">dnevnik</summary><pre>${esc(j.log.slice(-40).join('\n'))}</pre></details>`;
+  const oldPre=box.querySelector('pre'), stick=!oldPre || (oldPre.scrollHeight-oldPre.scrollTop-oldPre.clientHeight<30), oldTop=oldPre?oldPre.scrollTop:0;
+  if(j.log && j.log.length){
+    h+=`<div class="bk-logh"><button id="bk-logt">${BK_LOG_OPEN?'▾':'▸'} dnevnik (${j.log.length})</button><span class="spacer" style="flex:1"></span><a class="sub" data-tabgo="logs" style="cursor:pointer">cijeli dnevnik →</a></div>`;
+    if(BK_LOG_OPEN) h+=`<pre>${esc(j.log.join('\n'))}</pre>`;
+  }
   box.innerHTML=h+'</div>';
+  const np=box.querySelector('pre'); if(np) np.scrollTop = stick ? np.scrollHeight : oldTop;
+  const lt=$('#bk-logt'); if(lt) lt.onclick=()=>{ BK_LOG_OPEN=!BK_LOG_OPEN; try{ localStorage.setItem('jc-bk-log', BK_LOG_OPEN?'1':'0'); }catch(e){} renderBkJob(); };
   const c=$('#bk-cancel'); if(c) c.onclick=async()=>{ if(confirm('Prekinuti?')){ try{ await api('/api/backup/cancel',{}); }catch(e){} } };
   const d=$('#bk-dismiss'); if(d) d.onclick=()=>{ box.innerHTML=''; BKS.data.job=null; };
 }
@@ -2210,6 +2249,36 @@ $('#pwf').addEventListener('submit',async e=>{
   finally{ $('#pw-save').disabled=false; }
 });
 loadAcct();
+
+// ---------------- dnevnik ----------------
+let LG_T=null, LG_INFO=null;
+function lgCls(l){
+  const m=l.match(/^(\[[^\]]+\])\s?(.*)$/); const t=m?m[1]:'', r=m?m[2]:l;
+  const c=/DEBUG/.test(r)?'d':/(greška|Greška|error|Error|nije uspio|nije uspjel|Traceback|✘)/.test(r)?'e':/(UPOZORENJE|Upozorenje|WARN|djelomično)/.test(r)?'w':'';
+  return `<span class="t">${esc(t)}</span> <span class="${c}">${esc(r)}</span>`;
+}
+async function loadLogs(){
+  clearTimeout(LG_T);
+  if(current!=='logs') return;
+  let r; try{ r=await api('/api/logs?lines='+$('#lg-n').value+'&q='+encodeURIComponent($('#lg-q').value)); }catch(e){ $('#lg-view').textContent=e.message; return; }
+  LG_INFO=r;
+  $('#lg-en').checked=r.enabled; $('#lg-dbg').checked=r.debug; $('#lg-dbg').disabled=!r.enabled;
+  if(![...$('#lg-keep').options].some(o=>o.value==String(r.keep))) $('#lg-keep').insertAdjacentHTML('beforeend',`<option>${r.keep}</option>`);
+  $('#lg-keep').value=String(r.keep);
+  $('#lg-path').textContent=r.path||'';
+  $('#lg-info').textContent=`${r.files} datoteka · ${fsz(r.size)} ukupno · rotacija na ${fsz(r.max_bytes)}, čuva se ${r.keep} starih`;
+  const v=$('#lg-view'), stick=v.scrollHeight-v.scrollTop-v.clientHeight<40;
+  v.innerHTML=r.lines.length?r.lines.map(lgCls).join('\n'):'<span class="t">(dnevnik je prazan'+(r.enabled?'':' - zapis u datoteku je isključen')+')</span>';
+  if(stick) v.scrollTop=v.scrollHeight;
+  if($('#lg-live').checked) LG_T=setTimeout(loadLogs,3000);
+}
+async function lgSave(o){ try{ await api('/api/logs/settings',o); toast('Spremljeno'); }catch(e){ toast(e.message,true); } loadLogs(); }
+$('#lg-en').onchange=e=>lgSave({enabled:e.target.checked});
+$('#lg-dbg').onchange=e=>lgSave({debug:e.target.checked});
+$('#lg-keep').onchange=e=>lgSave({keep:Number(e.target.value)});
+$('#lg-n').onchange=loadLogs; $('#lg-live').onchange=loadLogs;
+let LG_QT=null; $('#lg-q').oninput=()=>{ clearTimeout(LG_QT); LG_QT=setTimeout(loadLogs,300); };
+$('#lg-clear').onclick=async()=>{ if(!confirm('Obrisati sve datoteke dnevnika?')) return; try{ await api('/api/logs/clear',{}); }catch(e){ return toast(e.message,true); } loadLogs(); };
 </script>
 </body>
 </html>
