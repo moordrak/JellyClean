@@ -469,7 +469,7 @@ header{gap:12px}
       <label class="w3">Host <input name="ssh_host" placeholder="192.168.1.20 - prazno = bez SSH-a"></label>
       <label class="w2">Korisnik <input name="ssh_user" placeholder="mrak"></label>
       <label class="w1">Port <input name="ssh_port" placeholder="22"></label>
-      <label class="w3">Način <select name="ssh_mode"><option value="helper">pomoćni program (preporučeno)</option><option value="sudo">sudo bez lozinke</option><option value="direct">izravno (root)</option></select></label>
+      <label class="w3">Način <select name="ssh_mode"><option value="helper">pomoćni program (preporučeno)</option><option value="sudo">sudo bez lozinke</option><option value="direct">izravno (root)</option></select><small>Za korisnika root uvijek se koristi izravni način.</small></label>
       <details class="w6"><summary class="sub">Putanje na tom računalu (prazno = otkrij automatski)</summary>
         <div class="svf-paths">
           <label>config <input name="jf_config" placeholder="/opt/jellyfin/config"></label>

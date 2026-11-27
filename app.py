@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "2.0.1"
+APP_VERSION = "2.0.2"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -1713,6 +1713,8 @@ class JFConfig:
         err = (p.stderr.read() or "").strip() if p.stderr else ""
         if p.returncode == 255 and not stop_ev.is_set():
             raise SSHError("SSH spajanje nije uspjelo: " + (err or "nepoznata greška"))
+        if "jellyclean-helper" in err and "not found" in err:
+            raise SSHError(f"Pomoćni program nije postavljen na {CFG['ssh_host']} - na kartici Serveri klikni 'Postavi pristup'.")
         if "sudo:" in err and ("password" in err or "not allowed" in err):
             raise SSHError("sudo traži lozinku ili nije dopušten: " + err[:200])
 
@@ -1727,6 +1729,9 @@ class JFConfig:
         err = p.stderr.strip()
         if p.returncode == 255:
             raise SSHError("SSH spajanje nije uspjelo: " + (err or "nepoznata greška"))
+        if "jellyclean-helper" in err and ("command not found" in err or "No such file" in err or "not found" in err):
+            raise SSHError(f"Pomoćni program nije postavljen na {CFG['ssh_host']} (korisnik {CFG['ssh_user']}). "
+                           "Na kartici Serveri klikni 'Postavi pristup' i naredbu pokreni NA TOM računalu.")
         if "sudo:" in err and ("password" in err or "lozink" in err or "not allowed" in err):
             raise SSHError("sudo traži lozinku ili nije dopušten - pokreni LXC skriptu ponovno ili postavi "
                            "jellyclean-helper (vidi README): " + err[:200])
@@ -3238,6 +3243,8 @@ class ServerRegistry:
             "jf_log": body.get("jf_log") or "", "jf_data": body.get("jf_data") or "",
             "jf_metadata": body.get("jf_metadata") or "",
         }
+        if cfg["ssh_user"] == "root":
+            cfg["ssh_helper"], cfg["ssh_sudo"] = "", False
         if cfg["jf_url"] and not re.match(r"https?://", cfg["jf_url"]):
             raise ValueError("Jellyfin URL mora počinjati s http:// ili https://")
         if not re.fullmatch(r"\d{1,5}", cfg["ssh_port"]):
@@ -3312,6 +3319,9 @@ def server_test(sv):
         if c["ssh_host"]:
             r = {"ok": False}
             try:
+                if c["ssh_user"] == "root" and (c["ssh_helper"] or c["ssh_sudo"]):
+                    c["ssh_helper"], c["ssh_sudo"] = "", False
+                    changed = True
                 if not c["ssh_helper"] and c["ssh_user"] != "root" and not c["ssh_sudo"]:
                     # možda je pomoćni program već postavljen (bootstrap skripta) - probaj ga
                     c["ssh_helper"] = "/usr/local/sbin/jellyclean-helper"
