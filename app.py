@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "2.6.0"
+APP_VERSION = "2.6.1"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -4473,13 +4473,27 @@ class Backups:
                              "policy": full.get("Policy"), "items": items, "playlists": playlists})
                 self._phase(f"Korisnik {u['Name']}: {len(items)} stavki, {len(playlists)} playlista")
             # oznake serija (za prepoznavanje epizoda na drugom serveru)
-            self._phase("Oznake serija…")
-            series, ids = {}, list(series_ids)
-            for i in range(0, len(ids), 150):
+            # Ne preko ?Ids=… (na novijem Jellyfinu upit s puno ID-ova zna trajati jako dugo), nego popis svih serija u stranicama.
+            series, start, total = {}, 0, None
+            self._phase(f"Oznake serija ({len(series_ids)})…", {"done": 0, "total": len(series_ids)})
+            while series_ids and len(series) < len(series_ids):
                 self._check()
-                r = JF.req("GET", "/Items", {"Ids": ",".join(ids[i:i + 150]), "Fields": "ProviderIds,Path,ProductionYear"}) or {}
-                for s in r.get("Items") or []:
-                    series[s["Id"]] = {"name": s.get("Name"), "year": s.get("ProductionYear"), "pids": _pids(s.get("ProviderIds")), "path": s.get("Path")}
+                r = JF.req("GET", "/Items", {"Recursive": "true", "IncludeItemTypes": "Series", "StartIndex": start, "Limit": 300,
+                                             "Fields": "ProviderIds,Path,ProductionYear", "EnableImages": "false",
+                                             "EnableUserData": "false", "SortBy": "SortName"}, timeout=120) or {}
+                page = r.get("Items") or []
+                total = r.get("TotalRecordCount", total)
+                for s in page:
+                    if s.get("Id") in series_ids:
+                        series[s["Id"]] = {"name": s.get("Name"), "year": s.get("ProductionYear"), "pids": _pids(s.get("ProviderIds")), "path": s.get("Path")}
+                start += len(page)
+                with self.lock:
+                    self.job["progress"] = {"done": len(series), "total": len(series_ids)}
+                    self.job["phase"] = f"Oznake serija: {len(series)}/{len(series_ids)} (pregledano {start}{'/' + str(total) if total else ''})"
+                if not page or (total is not None and start >= total):
+                    break
+            if len(series) < len(series_ids):
+                self._phase(f"Oznake serija: {len(series)}/{len(series_ids)} (ostale više nisu u biblioteci)")
             doc = {"format": 1, "created": now_iso(), "server": {"id": srv.id, "name": srv.name, "url": CFG["jf_url"]},
                    "jellyfin": jm, "libraries": libs, "series": series, "users": data}
             with open(os.path.join(d, "users.json"), "w", encoding="utf-8") as f:
