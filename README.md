@@ -306,3 +306,7 @@ bash /opt/jellyclean/proxmox/lxc-post-update.sh
 - **Zaboravljena lozinka**: s Proxmox hosta `pct exec <ID> -- rm /var/lib/jellyclean/auth.json && pct exec <ID> -- systemctl restart jellyclean`. Tada ponovno vrijedi lozinka iz `/etc/jellyclean.env`.
 - Skripte i `curl` i dalje mogu koristiti Basic auth (`curl -u korisnik:lozinka …`).
 
+### Spremanje na više mjesta
+- *Spremi na* nudi sva mjesta pohrane kao kvačice. Zadano je odabran **prvi montirani NAS**, a ako NAS-a nema, lokalno spremište. Tvoj odabir se pamti u pregledniku.
+- Ako odabereš više mjesta, kopija se radi na prvo (označeno *prvo*), a zatim se kopira na ostala. Ako kopiranje na neko mjesto ne uspije (npr. nema mjesta), sigurnosna kopija ostaje spremljena, a posao je označen kao *djelomično* s popisom grešaka.
+

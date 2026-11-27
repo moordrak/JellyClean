@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "2.5.0"
+APP_VERSION = "2.6.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -4279,14 +4279,62 @@ class Backups:
         return bid, p
 
     # ----------------------------------------------------------- puni backup ---
-    def start_full(self, stop=True, meta=False, loc="local"):
+    def start_full(self, stop=True, meta=False, loc="local", also=None):
         if not JFC.enabled():
             raise ValueError("Puni backup treba SSH pristup Jellyfin računalu (kartica Serveri → Postavi pristup)")
         if JFC.status and JFC.status.get("helper_outdated"):
             raise ValueError("Pomoćni program na Jellyfin računalu je zastario - na kartici Serveri klikni 'Postavi pristup' i pokreni novu naredbu.")
         srv = _CUR.srv
         L = STORE.loc(loc)
-        return self._start("full", f"Puni backup: {srv.name} → {L['name']}", lambda: self._full(srv, bool(stop), bool(meta), L["id"]), srv)
+        extra = self._extra_locs(also, L)
+        return self._start("full", f"Puni backup: {srv.name} → {self._dest_title(L, extra)}",
+                           lambda: self._with_copies(lambda: self._full(srv, bool(stop), bool(meta), L["id"]), L, extra), srv)
+
+    # ---- istovremeno spremanje na više mjesta: backup se radi na prvo, zatim kopira na ostala ----
+    def _extra_locs(self, also, L):
+        out = []
+        for lid in also or []:
+            if lid and lid != L["id"] and all(x["id"] != lid for x in out):
+                out.append(STORE.loc(lid))
+        return out
+
+    @staticmethod
+    def _dest_title(L, extra):
+        return L["name"] + (f" + {', '.join(x['name'] for x in extra)}" if extra else "")
+
+    def _with_copies(self, fn, L, extra):
+        res = fn()
+        if not extra or not isinstance(res, dict) or not res.get("backup"):
+            return res
+        bid = res["backup"]
+        _, src = self.find(bid, L["id"])
+        files = [n for n in os.listdir(src) if n in BK_FILES]
+        total = sum(os.path.getsize(os.path.join(src, n)) for n in files)
+        copies, failed = [], []
+        for X in extra:
+            self._check()
+            self._phase(f"Kopiram na {X['name']}…", {"done": 0, "total": total})
+            try:
+                X = STORE.loc(X["id"])   # svježe stanje (montiran? slobodno mjesto)
+                if X.get("free") is not None and total > X["free"] - 64 * 1024 * 1024:
+                    raise ValueError(f"nema dovoljno mjesta ({human(X['free'])} slobodno, treba {human(total)})")
+                self._copy(bid, src, X, files, total, False)
+                copies.append({"loc": X["id"], "name": X["name"], "ok": True})
+            except BackupCancelled:
+                raise
+            except Exception as e:
+                failed.append(f"{X['name']}: {e}")
+                copies.append({"loc": X["id"], "name": X["name"], "ok": False, "error": str(e)})
+                log(f"Backup: kopija {bid} na {X['name']} nije uspjela: {e}")
+        res["copies"] = copies
+        with self.lock:
+            self.job["progress"] = None
+        if failed:
+            self._phase("Spremljeno, ali neke kopije nisu uspjele")
+            res["copy_errors"] = failed
+        else:
+            self._phase(f"Spremljeno na {1 + len(copies)} mjesta")
+        return res
 
     def _full(self, srv, stop, meta, loc="local"):
         bid, d = self._new_dir("full", srv, loc)
@@ -4350,12 +4398,14 @@ class Backups:
             raise
 
     # ----------------------------------------------------- korisnički backup ---
-    def start_users(self, user_ids=None, loc="local"):
+    def start_users(self, user_ids=None, loc="local", also=None):
         if not JF.enabled():
             raise ValueError("Korisnički backup treba Jellyfin URL i API ključ (kartica Serveri)")
         srv = _CUR.srv
         L = STORE.loc(loc)
-        return self._start("users", f"Korisnički backup: {srv.name} → {L['name']}", lambda: self._users(srv, user_ids or [], L["id"]), srv)
+        extra = self._extra_locs(also, L)
+        return self._start("users", f"Korisnički backup: {srv.name} → {self._dest_title(L, extra)}",
+                           lambda: self._with_copies(lambda: self._users(srv, user_ids or [], L["id"]), L, extra), srv)
 
     def _items(self, uid, extra):
         out, start = [], 0
@@ -5808,9 +5858,10 @@ class Handler(BaseHTTPRequestHandler):
                                             "user": sv.cfg["ssh_user"], "host": sv.cfg["ssh_host"]})
                 return self._send(404, {"error": "Nepoznata radnja"})
             if u.path == "/api/backup/full":
-                return self._send(200, BK.start_full(body.get("stop", True), body.get("metadata", False), body.get("loc") or "local"))
+                return self._send(200, BK.start_full(body.get("stop", True), body.get("metadata", False), body.get("loc") or "local",
+                                                          body.get("also") or []))
             if u.path == "/api/backup/users":
-                return self._send(200, BK.start_users(body.get("users"), body.get("loc") or "local"))
+                return self._send(200, BK.start_users(body.get("users"), body.get("loc") or "local", body.get("also") or []))
             if u.path == "/api/backup/copy":
                 return self._send(200, BK.start_copy(body.get("id"), body.get("loc"), bool(body.get("move")), body.get("src_loc")))
             if u.path == "/api/storage/exports":
