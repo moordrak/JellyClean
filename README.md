@@ -38,6 +38,7 @@ Web servis za pregled i čišćenje prostora na Jellyfin poslužitelju. Nema van
   - rezultat: koliko tokova kartica stiže, preporučeni broj s rezervom i što ju je ograničilo (ograničenje sesija drivera ili snaga)
   - upozorava ako netko upravo gleda s transkodiranjem; test se može prekinuti
 - **Smeće i duplikati**: sample videi, nedovršena preuzimanja (`.part`, `.!qB`), `.exe` i `.url` datoteke iz releasea, rar arhive, prazne datoteke i mape, više verzija istog filma ili epizode.
+- **Migracija Jellyfina** (kartica *Migracija*): premješta Jellyfin iz Docker kontejnera u novi Proxmox LXC sa samostalnim Jellyfinom, NVENC/QSV transkodiranjem i NFS medijima. Čarobnjak radi na Proxmox hostu, a pitanja se odgovaraju u sučelju JellyCleana. JellyClean na Proxmoxu nema shell (vidi [Migracija Jellyfina](#migracija-jellyfina-docker--proxmox-lxc)).
 - **Kanta**: obrisane stavke se premještaju u `.jellyclean-trash` unutar iste mape, što je trenutno jer se ništa ne kopira. Iz kante se mogu vratiti, a automatski se prazni nakon `TRASH_DAYS` dana.
 - **Hardlinkovi**: servis označava datoteke koje imaju još jednu kopiju (tipično *arr + qBittorrent) i upozorava da njihovo brisanje ne oslobađa prostor dok se ne obriše i torrent.
 - Nakon brisanja Jellyfin sam pokreće osvježavanje biblioteke.
@@ -190,4 +191,53 @@ JellyClean može upravljati s više Jellyfin servera koji koriste **iste medije*
 - Nakon brisanja ili vraćanja datoteka JellyClean javlja promjenu **svim** serverima. Automatska sinkronizacija također obuhvaća sve servere.
 
 Postavke servera spremaju se u `DATA_DIR/servers.json` (prava 600). Stanje po serveru, kao rezultati testa enkodiranja i NVENC patcha, sprema se u `DATA_DIR/servers/<id>/`. Izmjene glavnog servera napravljene u sučelju imaju prednost pred env datotekom, a gumb **Vrati iz env** ih poništava.
+
+## Migracija Jellyfina (Docker → Proxmox LXC)
+
+Kartica **Migracija** premješta Jellyfin iz Docker kontejnera (npr. u VM-u na starom serveru) u novi LXC na Proxmox hostu, sa samostalnim Jellyfinom iz službenog repozitorija:
+
+- prenosi sve postavke, korisnike, bazu, gledanost, metapodatke i pluginove
+- hardversko transkodiranje: NVIDIA NVENC/NVDEC (drajver na hostu, iste knjižnice u LXC-u) ili Intel Quick Sync
+- LXC na odabranom storageu (zadano NVMe LVM-Thin), mediji s NAS-a preko NFS-a
+- **provjera putanja biblioteka**: prije kreiranja LXC-a usporedi putanje iz Jellyfin baze s NFS shareom i sama predloži ispravnu točku montiranja (npr. `/nas/Gondolin` umjesto `/nas`)
+- transkodiranje uvijek lokalno; putanje koje su postojale samo u Dockeru se otkriju i poprave, a pri pokretanju Jellyfina ispravljaju se i greške *Access denied*
+- opcija da stari i novi Jellyfin rade paralelno (novi Server ID i ime)
+- svaki odgovor se pamti, pa nakon greške ne treba sve upisivati ponovno
+
+### Pristup Proxmoxu: ograničeni ključ
+
+Migracija mora raditi na Proxmox hostu kao root (`pct`, storage, GPU), ali JellyClean **ne dobiva shell**:
+
+1. **Postavi pristup** → upiši IP Proxmoxa. JellyClean napravi **novi SSH ključ samo za Proxmox** i da naredbu za shell Proxmoxa (web sučelje → node → *Shell*). Naredba prvo provjeri SHA256 skripte, a poveznica vrijedi 30 minuta.
+2. Naredba instalira `/usr/local/sbin/jellyclean-pve-agent` i `/usr/local/sbin/jellyfin-docker2lxc` te u `authorized_keys` roota (na Proxmoxu `/etc/pve/priv/authorized_keys`) upiše:
+   ```
+   from="<IP JellyCleana>",command="/usr/local/sbin/jellyclean-pve-agent <ID>",restrict ssh-ed25519 AAAA… jellyclean-pve <ID>
+   ```
+   - `command=`: što god klijent pošalje, sshd pokreće **samo agenta**. Agent zna samo `ping`, `start`, `status`, `answer`, `cancel`, `log` i `revoke`, a sve ostalo odbija.
+   - `from=`: ključ radi **samo s IP adrese JellyCleana**
+   - `restrict`: bez terminala, prosljeđivanja portova, agenta i X11
+3. **Pokrenuo sam - provjeri ključ** aktivira novi ključ.
+
+**Provjera ključa** (gumb *Provjeri ključ*, automatski svakih 30 minuta i pri otvaranju kartice):
+- privatni ključ postoji, ima prava 600 (kriva prava se ispravljaju) i odgovara javnom
+- agent potvrđuje da je prijava stigla **baš tim ključem** (ID ključa iz `command=`)
+- verzije agenta i migracijske skripte na Proxmoxu odgovaraju ovoj verziji JellyCleana. Ako ne odgovaraju, nudi se *Ažuriraj na Proxmoxu*
+- trenutna IP adresa JellyCleana uspoređuje se s dopuštenom
+
+**Promjena IP adrese JellyCleana**: Proxmox odbija ključ (`from=`) i kartica javlja *IP adresa promijenjena*. **Novo dopuštenje** napravi novi ključ za novu adresu i daje novu naredbu. Ta naredba na Proxmoxu **briše sve stare ključeve ovog JellyCleana**, a kad novi ključ proradi, JellyClean briše i svoju kopiju starog. Isto vrijedi za *Zamijeni ključ* i *Ažuriraj na Proxmoxu*.
+
+**Ukloni pristup** briše ključ na Proxmoxu i u JellyCleanu. Ako Proxmox tada nije dostupan, sučelje pokaže naredbu za ručno uklanjanje.
+
+Ključ je u `DATA_DIR/ssh/pve-<ID>`, a stanje u `DATA_DIR/pve.json` (prava 600). Lozinke za Docker VM (SSH i sudo) upisuješ u sučelju. Prolaze kroz agenta do skripte, koja ih koristi samo dok radi i nigdje ih ne zapisuje.
+
+### Bez JellyCleana
+
+Ista skripta radi i samostalno na Proxmox hostu, s whiptail čarobnjakom:
+
+```bash
+bash proxmox/jellyfin-docker2lxc.sh            # nova migracija ili nastavak
+bash proxmox/jellyfin-docker2lxc.sh --resume   # nastavak nakon restarta hosta
+bash proxmox/jellyfin-docker2lxc.sh --text     # bez prozora
+bash proxmox/jellyfin-docker2lxc.sh --sync-nvidia <ID>   # nakon nadogradnje NVIDIA drajvera na hostu
+```
 

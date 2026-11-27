@@ -12,7 +12,7 @@ apt-get install -y -qq python3 git openssh-client >/dev/null
 if [ -d "$DIR/.git" ]; then
   git -C "$DIR" pull --ff-only
 elif [ -f "$(dirname "$0")/../app.py" ]; then
-  mkdir -p "$DIR"; cp -r "$(dirname "$0")"/../{app.py,static,.env.example} "$DIR/"
+  mkdir -p "$DIR"; cp -r "$(dirname "$0")"/../{app.py,static,proxmox,.env.example} "$DIR/"
 else
   git clone --depth 1 "$REPO" "$DIR"
 fi

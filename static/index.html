@@ -176,6 +176,25 @@ header{gap:12px}
 .svf-paths{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin-top:8px}
 @media (max-width:760px){.svf fieldset{grid-template-columns:1fr}.svf .w1,.svf .w2,.svf .w3,.svf .w5{grid-column:1/-1}}
 .svb-cmd{display:flex;gap:8px;align-items:stretch;margin:8px 0}
+/* ---- migracija ---- */
+.mg-grid{display:grid;grid-template-columns:minmax(340px,440px) 1fr;gap:16px;align-items:start}
+@media (max-width:1100px){.mg-grid{grid-template-columns:1fr}}
+.pve-card .kv{display:grid;grid-template-columns:130px 1fr;gap:5px 10px;font-size:13px;margin:10px 0}
+.pve-card .kv span:nth-child(odd){color:var(--muted)}
+.pve-card .kv span{min-width:0;overflow-wrap:anywhere}
+.pve-card .kv .diff{color:var(--bad);font-weight:600}
+.mg-con{font-family:var(--mono);font-size:12px;line-height:1.5;background:rgba(0,0,0,.38);border:1px solid var(--line);border-radius:8px;padding:10px 12px;height:340px;overflow:auto;white-space:pre-wrap;margin:0}
+.mg-con:empty::before{content:'Ovdje će se prikazivati napredak migracije.';color:var(--muted)}
+.mg-q{border:1px solid var(--accent);background:rgba(0,164,220,.07);border-radius:10px;padding:14px 16px;margin-bottom:12px}
+.mg-q .sec{font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--accent);margin-bottom:6px}
+.mg-q .txt{white-space:pre-wrap;margin-bottom:10px;font-size:13.5px}
+.mg-q .txt.long{font-family:var(--mono);font-size:12px;max-height:46vh;overflow:auto;background:rgba(0,0,0,.25);padding:10px;border-radius:8px}
+.mg-q input[type=text],.mg-q input[type=password]{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--text);padding:8px 10px;border-radius:7px;font:inherit;font-family:var(--mono)}
+.mg-opts{display:flex;flex-direction:column;gap:2px;max-height:42vh;overflow:auto;margin-bottom:6px}
+.mg-opts label{display:flex;gap:10px;align-items:baseline;padding:7px 9px;border-radius:7px;cursor:pointer;border:1px solid transparent}
+.mg-opts label:hover{background:rgba(255,255,255,.04);border-color:var(--line)}
+.mg-opts label b{font-family:var(--mono);font-weight:600;min-width:90px}
+.mg-opts label span{font-family:var(--mono);font-size:12.5px;color:var(--muted);white-space:pre-wrap}
 .svb-cmd code{flex:1;background:rgba(0,0,0,.35);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12.5px;overflow-wrap:anywhere;font-family:var(--mono)}
 .gm-live{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
 .gm-live i{width:8px;height:8px;border-radius:50%;background:var(--muted)}
@@ -219,6 +238,7 @@ header{gap:12px}
     <button data-tab="enctest" title="Test paralelnog enkodiranja">Test enkodiranja</button>
     <button data-tab="trash">Kanta</button>
     <button data-tab="servers">Serveri</button>
+    <button data-tab="migrate" title="Migracija Jellyfina iz Dockera u Proxmox LXC">Migracija</button>
   </nav>
   <div class="spacer"></div>
   <span id="status"></span>
@@ -419,6 +439,25 @@ header{gap:12px}
   <div id="sv-list" class="sv-grid"></div>
 </section>
 
+<!-- MIGRACIJA -->
+<section class="tab" id="tab-migrate">
+  <div class="tab-head"><h2>Migracija Jellyfina</h2><p>Iz Docker kontejnera u novi Proxmox LXC sa samostalnim Jellyfinom, NVENC/QSV transkodiranjem i NFS medijima</p></div>
+  <div class="mg-grid">
+    <div>
+      <div class="section"><h2>Proxmox pristup</h2><div class="card pve-card" id="pve-card"><div class="sub">Provjeravam…</div></div></div>
+      <div class="note" style="margin-top:12px">JellyClean na Proxmoxu <b>nema shell</b>. Njegov ključ smije pokrenuti samo agenta za migraciju i samo s adrese JellyCleana
+        (<code>from=…,command=…,restrict</code> u <code>authorized_keys</code>). Kad se adresa JellyCleana promijeni, ključ prestaje raditi i treba novo dopuštenje; stari ključ se tada briše i na Proxmoxu i u JellyCleanu.</div>
+    </div>
+    <div>
+      <div class="section"><h2>Čarobnjak</h2>
+        <div class="toolbar"><button class="btn primary" id="mg-start" disabled>Pokreni migraciju</button><button class="btn danger" id="mg-cancel" disabled>Prekini</button><button class="btn" id="mg-log">Log</button><span id="mg-state"></span></div>
+        <div id="mg-q"></div>
+        <pre class="mg-con" id="mg-con"></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- KANTA -->
 <section class="tab" id="tab-trash">
   <div class="tab-head"><h2>Kanta</h2><p>Obrisane stavke - vraćanje ili trajno brisanje</p></div>
@@ -482,6 +521,11 @@ header{gap:12px}
     <div id="svf-res"></div>
     <div class="row"><button class="btn" type="button" id="svf-cancel">Odustani</button><button class="btn primary" type="button" id="svf-save">Spremi i provjeri vezu</button></div>
   </form>
+</dialog>
+
+<dialog id="pvedlg" class="wide">
+  <div class="head" style="display:flex;align-items:center;gap:12px"><h3 style="margin:0" id="pvd-title">Proxmox pristup</h3><button class="btn" id="pvd-close" style="margin-left:auto">Zatvori ✕</button></div>
+  <div id="pvd-body"></div>
 </dialog>
 
 <dialog id="svboot" class="wide">
@@ -579,7 +623,7 @@ $$('#nav button').forEach(b=>b.onclick=()=>{
   current=b.dataset.tab; clearSel(); refreshCurrent();
 });
 function refreshCurrent(){
-  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash, jfconfig:()=>loadJc(false), paths:loadPc, enctest:()=>{ loadEt(); loadNvp(); gmStart(); }, servers:loadSv}[current]||(()=>{}))();
+  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash, jfconfig:()=>loadJc(false), paths:loadPc, enctest:()=>{ loadEt(); loadNvp(); gmStart(); }, servers:loadSv, migrate:()=>loadPve(true)}[current]||(()=>{}))();
 }
 
 // ---------------- pregled ----------------
@@ -1220,6 +1264,178 @@ $('#svboot').addEventListener('click',e=>{ const c=e.target.closest('[data-copy]
   const t=$('#'+c.dataset.copy).textContent;
   (navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(()=>toast('Kopirano'),()=>{ const r=document.createRange(); r.selectNodeContents($('#'+c.dataset.copy)); const s=getSelection(); s.removeAllRanges(); s.addRange(r); toast('Označeno - kopiraj s Ctrl+C'); });
 });
+// ---------------- migracija: Proxmox pristup ----------------
+let PVE=null;
+const MG={offset:0, timer:null, qid:null, state:null};
+const PVE_PILL={ok:['ok','veza radi'], none:['','nije postavljen'], pending:['warn','čeka naredbu na Proxmoxu'], unchecked:['','nije provjereno'],
+  ip_changed:['bad','IP adresa promijenjena'], key_rejected:['bad','ključ odbijen'], key_missing:['bad','ključ nedostaje'], key_mismatch:['bad','krivi ključ'],
+  unreachable:['bad','Proxmox nedostupan'], hostkey:['bad','host ključ promijenjen'], error:['bad','greška']};
+async function loadPve(check){
+  try{ PVE=await api('/api/pve'+(check===false?'?check=0':'')); }
+  catch(e){ $('#pve-card').innerHTML=`<div class="note warn">${esc(e.message)}</div>`; return; }
+  renderPve();
+  if(PVE.state==='ok') mgPoll(true); else mgButtons();
+}
+function renderPve(){
+  const s=PVE, a=s.active, r=s.remote||{}, b=s.bundled||{};
+  const [cls,lbl]=PVE_PILL[s.state]||['',s.state];
+  const notes=[];
+  if(s.rotated) notes.push(`<div class="note" style="margin:8px 0 0"><b>Novi ključ je aktivan.</b>${s.rotated.old?` Stari ključ (${esc(s.rotated.old)}) obrisan je i na Proxmoxu i u JellyCleanu.`:''}</div>`);
+  if(s.message) notes.push(`<div class="note warn" style="margin:8px 0 0">${esc(s.message)}</div>`);
+  if(s.pending) notes.push(`<div class="note warn" style="margin:8px 0 0">Novi ključ (${esc(s.pending.kid)}, za IP ${esc(s.pending.ip)}) čeka da se naredba pokrene na Proxmoxu.${a?' Dok se to ne dogodi, vrijedi stari ključ.':''}</div>`);
+  if(s.outdated) notes.push(`<div class="note warn" style="margin:8px 0 0">Na Proxmoxu je starija verzija (agent v${esc(r.agent)}, skripta v${esc(r.migrate||'?')}; ovaj JellyClean nosi agent v${esc(b.agent)}, skriptu v${esc(b.migrate)}). Klikni <b>Ažuriraj na Proxmoxu</b>.</div>`);
+  if(a && a.fixed_perms) notes.push('<div class="sub" style="margin-top:6px">Prava privatnog ključa su ispravljena na 600.</div>');
+  const ipd = a && s.current_ip && a.ip && s.current_ip!==a.ip;
+  const bad=['ip_changed','key_rejected','key_missing','key_mismatch','hostkey'].includes(s.state);
+  let btns='';
+  if(!a && !s.pending) btns=`<button class="btn primary" data-pv="setup">Postavi pristup</button>`;
+  else{
+    btns+=`<button class="btn${bad?'':' primary'}" data-pv="check">Provjeri ključ</button>`;
+    btns+= bad||ipd ? `<button class="btn primary" data-pv="setup">Novo dopuštenje</button>` : `<button class="btn" data-pv="setup" title="Napravi novi ključ; stari se briše">${s.outdated?'Ažuriraj na Proxmoxu':(s.pending?'Nova naredba':'Zamijeni ključ')}</button>`;
+    btns+=`<button class="btn danger" data-pv="revoke">Ukloni pristup</button>`;
+  }
+  $('#pve-card').innerHTML=`
+    <h3>Proxmox host <span class="pill ${cls}">${esc(lbl)}</span></h3>
+    <div class="kv">
+      <span>Host</span><span>${esc(s.host||'–')}${s.port&&s.port!=22?':'+esc(s.port):''}${r.host?` <span class="sub">(${esc(r.host)})</span>`:''}</span>
+      ${r.pve?`<span>Proxmox</span><span>${esc(r.pve)}</span>`:''}
+      <span>Dopuštena IP</span><span>${esc(a?a.ip:(s.pending?s.pending.ip:'–'))}</span>
+      <span>IP JellyCleana</span><span class="${ipd?'diff':''}">${esc(s.current_ip||'–')}${ipd?' ≠ dopuštena':''}</span>
+      ${a?`<span>Ključ</span><span>${esc(a.kid)} · <span class="sub">${esc(a.fingerprint||'?')}</span></span>
+      <span>Aktiviran</span><span>${fdate(a.activated||a.created)}</span>`:''}
+      ${r.agent?`<span>Na Proxmoxu</span><span>agent v${esc(r.agent)} · skripta v${esc(r.migrate||'?')}</span>`:''}
+    </div>${notes.join('')}
+    <div class="toolbar" style="margin-top:12px;margin-bottom:0">${btns}</div>`;
+}
+$('#pve-card').addEventListener('click', async e=>{
+  const b=e.target.closest('[data-pv]'); if(!b) return;
+  const a=b.dataset.pv;
+  if(a==='check'){ b.disabled=true; b.textContent='Provjeravam…'; await loadPve(true); }
+  if(a==='setup') pveSetupForm();
+  if(a==='revoke'){
+    if(!confirm('Ukloniti JellyCleanov pristup Proxmoxu?\n\nKljuč se briše iz authorized_keys na Proxmoxu i u JellyCleanu. Agent i migracijska skripta ostaju na hostu.')) return;
+    try{ const r=await api('/api/pve/revoke',{});
+      if(r.remote_removed) toast('Pristup uklonjen');
+      else alert('Ključ je obrisan u JellyCleanu, ali do Proxmoxa se nije moglo doći'+(r.error?` (${r.error})`:'')+'.\n\nNa Proxmoxu ga ukloni ručno:\n'+(r.manual||''));
+    }catch(err){ toast(err.message,true); }
+    loadPve(false);
+  }
+});
+function pveSetupForm(){
+  const s=PVE||{};
+  $('#pvd-title').textContent = s.active ? 'Novo dopuštenje za Proxmox' : 'Postavi pristup Proxmoxu';
+  $('#pvd-body').innerHTML=`
+    <p>JellyClean će napraviti <b>novi SSH ključ</b> i dati naredbu koju pokrećeš u shellu Proxmox hosta (kao root).
+      Naredba instalira agenta i migracijsku skriptu te upisuje ključ koji smije pokrenuti <b>samo agenta</b> i to <b>samo s adrese JellyCleana</b>.${s.active?' Svi stari ključevi ovog JellyCleana na Proxmoxu se brišu, a kad novi proradi, JellyClean briše i svoju kopiju starog.':''}</p>
+    <div class="toolbar"><label>Proxmox host <input id="pvd-host" value="${esc(s.host||'')}" placeholder="192.168.8.10" style="width:220px"></label>
+      <label>SSH port <input id="pvd-port" type="number" value="${esc(s.port||22)}" style="width:80px"></label>
+      <button class="btn primary" id="pvd-go">Napravi ključ i naredbu</button></div>
+    <div id="pvd-res"></div>`;
+  $('#pvedlg').showModal();
+  $('#pvd-go').onclick=async()=>{
+    const b=$('#pvd-go'); b.disabled=true; b.textContent='Pripremam…';
+    let r; try{ r=await api('/api/pve/setup',{host:$('#pvd-host').value.trim(), port:$('#pvd-port').value}); }
+    catch(e){ $('#pvd-res').innerHTML=`<div class="note warn">${esc(e.message)}</div>`; b.disabled=false; b.textContent='Napravi ključ i naredbu'; return; }
+    b.textContent='Napravljeno';
+    $('#pvd-res').innerHTML=`
+      <p>U shellu Proxmoxa <b>${esc(r.host)}</b> (web sučelje → node → <i>Shell</i>) pokreni:</p>
+      <div class="svb-cmd"><code id="pvd-c1">${esc(r.command)}</code><button class="btn" data-copy="pvd-c1">Kopiraj</button></div>
+      <p class="sub">Naredba prvo provjeri SHA256 skripte (<code>${esc(r.sha256.slice(0,16))}…</code>), pa je tek onda pokrene. Kraća varijanta bez provjere:</p>
+      <div class="svb-cmd"><code id="pvd-c2">${esc(r.simple)}</code><button class="btn" data-copy="pvd-c2">Kopiraj</button></div>
+      <p class="sub">Ključ ${esc(r.kid)} bit će dopušten samo s adrese <b>${esc(r.ip)}</b>. Poveznica vrijedi ${r.expires_min} min.
+        <a class="nvp-link" href="${esc(r.url)}" target="_blank" rel="noopener">Pogledaj skriptu</a></p>
+      <div class="row"><button class="btn primary" id="pvd-test">Pokrenuo sam - provjeri ključ</button></div>
+      <div id="pvd-test-res"></div>`;
+    $('#pvd-test').onclick=async()=>{
+      const t=$('#pvd-test'); t.disabled=true; t.textContent='Provjeravam…';
+      await loadPve(true);
+      if(PVE.state==='ok' && !PVE.pending){
+        $('#pvd-test-res').innerHTML=`<div class="note" style="margin-top:10px"><b>Veza radi.</b> ${PVE.rotated&&PVE.rotated.old?'Stari ključ je obrisan. ':''}Agent v${esc(PVE.remote.agent)}, skripta v${esc(PVE.remote.migrate)} na ${esc(PVE.remote.host)}.</div>`;
+        setTimeout(()=>$('#pvedlg').close(), 1800);
+      } else {
+        $('#pvd-test-res').innerHTML=`<div class="note warn" style="margin-top:10px">Novi ključ još ne radi. Je li naredba završila s „Gotovo”? ${PVE.message?esc(PVE.message):''}</div>`;
+      }
+      t.disabled=false; t.textContent='Pokrenuo sam - provjeri ključ';
+    };
+  };
+}
+$('#pvd-close').onclick=()=>$('#pvedlg').close();
+$('#pvedlg').addEventListener('click',e=>{ const c=e.target.closest('[data-copy]'); if(!c) return;
+  const t=$('#'+c.dataset.copy).textContent;
+  (navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(()=>toast('Kopirano'),()=>{ const r=document.createRange(); r.selectNodeContents($('#'+c.dataset.copy)); const s=getSelection(); s.removeAllRanges(); s.addRange(r); toast('Označeno - kopiraj s Ctrl+C'); });
+});
+
+// ---------------- migracija: čarobnjak ----------------
+const MG_STATE={idle:['','spremno'], running:['warn','radi…'], waiting:['warn','čeka tvoj odgovor'], done:['ok','završeno'], failed:['bad','prekinuto / greška']};
+function mgButtons(){
+  const ok=PVE&&PVE.state==='ok'&&!PVE.outdated, run=['running','waiting'].includes(MG.state);
+  $('#mg-start').disabled=!ok||run; $('#mg-cancel').disabled=!run;
+  $('#mg-start').textContent = MG.state==='failed' ? 'Pokreni ponovno' : 'Pokreni migraciju';
+  const [c,l]=MG_STATE[MG.state]||['',''];
+  $('#mg-state').innerHTML = MG.state ? `<span class="pill ${c}">${esc(l)}</span>` : '';
+}
+async function mgPoll(reset){
+  clearTimeout(MG.timer);
+  if(reset){ MG.offset=0; MG.qid=null; $('#mg-con').textContent=''; $('#mg-q').innerHTML=''; }
+  let r; try{ r=await api('/api/pve/migrate?offset='+MG.offset); }
+  catch(e){ $('#mg-state').innerHTML=`<span class="pill bad">${esc(e.message)}</span>`; if(current==='migrate') MG.timer=setTimeout(mgPoll,6000); return; }
+  if(r.text){ const c=$('#mg-con'), atEnd=c.scrollTop+c.clientHeight>=c.scrollHeight-30; c.textContent+=r.text; if(atEnd) c.scrollTop=c.scrollHeight; }
+  MG.offset=r.offset; MG.state=r.state; mgButtons(); mgQuestion(r.question);
+  if(['running','waiting'].includes(r.state) && current==='migrate') MG.timer=setTimeout(mgPoll, r.state==='waiting'?1500:1000);
+}
+function mgQuestion(q){
+  const box=$('#mg-q');
+  if(!q){ if(MG.qid!==null){ box.innerHTML=''; MG.qid=null; } return; }
+  if(q.id===MG.qid) return;               // isto pitanje - ne diraj ono što korisnik upisuje
+  MG.qid=q.id;
+  const long = (q.text||'').split('\n').length>14;
+  let h=`<div class="mg-q"><div class="sec">${esc(q.section||'')}</div><div class="txt${long?' long':''}">${esc(q.text)}</div>`;
+  if(q.error) h+=`<div class="note warn">${esc(q.error)}</div>`;
+  const t=q.type, d=q.default||'';
+  if(t==='input'||t==='password')
+    h+=`<input type="${t==='password'?'password':'text'}" id="mg-in" value="${t==='password'?'':esc(d)}" autocomplete="off">
+        <div class="row"><button class="btn primary" data-mga="send">Dalje</button></div>`;
+  else if(t==='yesno')
+    h+=`<div class="row"><button class="btn${d==='y'?' primary':''}" data-mga="yes">Da</button><button class="btn${d==='n'?' primary':''}" data-mga="no">Ne</button></div>`;
+  else if(t==='menu')
+    h+=`<div class="mg-opts">${q.options.map(o=>`<label><input type="radio" name="mg-r" value="${esc(o.tag)}"${o.tag===d?' checked':''}><b>${esc(o.tag)}</b><span>${esc(o.label)}</span></label>`).join('')}</div>
+        <div class="row"><button class="btn primary" data-mga="send">Odaberi</button></div>`;
+  else if(t==='checklist')
+    h+=`<div class="mg-opts">${q.options.map(o=>`<label><input type="checkbox" class="mg-c" value="${esc(o.tag)}"${o.on?' checked':''}><span style="color:var(--text)">${esc(o.label)}</span></label>`).join('')}</div>
+        <div class="row"><button class="btn primary" data-mga="send">Potvrdi</button></div>`;
+  h+=`<div class="sub" style="margin-top:6px">Pitanje #${q.id}</div></div>`;
+  box.innerHTML=h;
+  const inp=$('#mg-in'); if(inp){ inp.focus(); inp.onkeydown=e=>{ if(e.key==='Enter') mgSend('send'); }; }
+  if(t==='menu' && !$('input[name=mg-r]:checked')){ const f=$('input[name=mg-r]'); if(f) f.checked=true; }
+}
+$('#mg-q').addEventListener('click', e=>{ const b=e.target.closest('[data-mga]'); if(b) mgSend(b.dataset.mga); });
+async function mgSend(act){
+  const q=MG.qid; if(q===null) return;
+  let v;
+  if(act==='yes') v='y'; else if(act==='no') v='n';
+  else if($('#mg-in')) v=$('#mg-in').value;
+  else if($('input[name=mg-r]')) v=($('input[name=mg-r]:checked')||{}).value||'';
+  else v=$$('.mg-c').filter(c=>c.checked).map(c=>c.value);
+  $$('#mg-q button').forEach(b=>b.disabled=true);
+  try{ await api('/api/pve/migrate/answer',{id:q, value:v}); }
+  catch(e){ toast(e.message,true); $$('#mg-q button').forEach(b=>b.disabled=false); return; }
+  $('#mg-q').innerHTML=''; MG.qid=-1; setTimeout(()=>{ if(MG.qid===-1) MG.qid=null; mgPoll(); }, 400);
+}
+$('#mg-start').onclick=async()=>{
+  if(!confirm('Pokrenuti migraciju na Proxmoxu?\n\nPitanja će se pojavljivati ovdje. Do završne potvrde na sustavu se ništa ne mijenja.')) return;
+  try{ await api('/api/pve/migrate/start',{}); }catch(e){ return toast(e.message,true); }
+  setTimeout(()=>mgPoll(true), 600);
+};
+$('#mg-cancel').onclick=async()=>{
+  if(!confirm('Prekinuti migraciju? Ako je već počela mijenjati sustav, kasnije je možeš nastaviti (skripta pita "Nastaviti gdje je stala?").')) return;
+  try{ await api('/api/pve/migrate/cancel',{}); }catch(e){ toast(e.message,true); }
+  setTimeout(()=>mgPoll(), 1500);
+};
+$('#mg-log').onclick=async()=>{
+  try{ const r=await api('/api/pve/log'); const c=$('#mg-con'); c.textContent+='\n──── zadnji redci /root/jellyfin-migration/migration.log ────\n'+(r.text||'(prazno)')+'\n'; c.scrollTop=c.scrollHeight; }
+  catch(e){ toast(e.message,true); }
+};
+
 // ---------------- nadzor kartice uživo ----------------
 const GM={buf:[], seq:0, timer:null, paused:false, busy:false};
 function gmStart(){ if(GM.timer) return; GM.timer=setInterval(gmTick,1000); gmTick(); }

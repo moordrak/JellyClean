@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "2.0.2"
+APP_VERSION = "2.1.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -3396,12 +3396,441 @@ def refresh_all_libraries():
                 CtxThread(target=JF.library_refresh, daemon=True).start()
 
 
+# --------------------------------------------------------------------------
+# Proxmox pristup: migracija Jellyfina iz Dockera u LXC (kartica Migracija)
+#
+# JellyClean na Proxmox host ne dobiva shell. Njegov SSH ključ u authorized_keys ima
+#   from="<IP JellyCleana>",command="/usr/local/sbin/jellyclean-pve-agent <INST>:<KEYID>",restrict
+# pa smije pokrenuti SAMO agenta (ping/start/status/answer/cancel/log/revoke) i samo s IP adrese
+# JellyCleana. Kad se ta adresa promijeni, ključ prestaje raditi i traži se novo dopuštenje:
+# napravi se novi ključ, naredba na Proxmoxu briše sve stare ključeve ovog JellyCleana, a kad novi
+# proradi, JellyClean briše i svoju kopiju starog.
+# --------------------------------------------------------------------------
+import socket
+
+PVE_SRC_DIR = os.path.join(BASE_DIR, "proxmox")
+PVE_AGENT_SRC = os.path.join(PVE_SRC_DIR, "jellyclean-pve-agent.sh")
+PVE_MIGRATE_SRC = os.path.join(PVE_SRC_DIR, "jellyfin-docker2lxc.sh")
+PVE_TOKENS = {}   # token -> (keyid, istek)
+_PVE_HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
+
+
+def _src_version(path, rx):
+    try:
+        with open(path, encoding="utf-8") as f:
+            m = re.search(rx, f.read(), re.M)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+class PveError(SSHError):
+    def __init__(self, msg, kind="error"):
+        super().__init__(msg)
+        self.kind = kind
+
+
+class PveAccess:
+    TOKEN_MIN = 30
+
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.last = None
+
+    # ------------------------------------------------------------ stanje ---
+    def _file(self):
+        return os.path.join(_GCFG["data_dir"], "pve.json")
+
+    def _sshdir(self):
+        d = os.path.join(_GCFG["data_dir"], "ssh")
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        return d
+
+    def load(self):
+        try:
+            with open(self._file(), encoding="utf-8") as f:
+                st = json.load(f)
+            return st if isinstance(st, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def save(self, st):
+        tmp = self._file() + ".tmp"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
+            json.dump(st, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, self._file())
+
+    def key_file(self, kid):
+        if not re.fullmatch(r"[a-f0-9]{8,32}", kid or ""):
+            raise PveError("neispravan ID ključa")
+        return os.path.join(self._sshdir(), f"pve-{kid}")
+
+    def _inst(self, st):
+        if not re.fullmatch(r"[a-f0-9]{8}", st.get("inst") or ""):
+            st["inst"] = secrets.token_hex(4)
+        return st["inst"]
+
+    def _drop_key(self, kid):
+        for ext in ("", ".pub"):
+            try:
+                os.remove(self.key_file(kid) + ext)
+            except (OSError, PveError):
+                pass
+
+    @staticmethod
+    def local_ip(host, port=22):
+        """Adresa s koje JellyClean izlazi prema Proxmoxu (ona ide u from=)."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect((socket.gethostbyname(host), int(port)))
+                return s.getsockname()[0]
+        except (OSError, ValueError):
+            return None
+
+    def key_info(self, kid):
+        """Provjera ključa na strani JellyCleana: postoji, prava 600, javni dio odgovara privatnom."""
+        key = self.key_file(kid)
+        info = {"id": kid, "exists": os.path.exists(key), "fingerprint": None, "fixed_perms": False, "problem": None}
+        if not info["exists"]:
+            info["problem"] = "privatni ključ ne postoji"
+            return info
+        if os.stat(key).st_mode & 0o077:
+            os.chmod(key, 0o600)
+            info["fixed_perms"] = True
+        r = subprocess.run(["ssh-keygen", "-y", "-f", key], capture_output=True, text=True)
+        if r.returncode != 0:
+            info["problem"] = "privatni ključ je oštećen"
+            return info
+        try:
+            with open(key + ".pub", encoding="utf-8") as f:
+                pub = f.read().split()
+        except OSError:
+            pub = []
+        if pub[:2] != r.stdout.split()[:2]:
+            info["problem"] = "javni ključ ne odgovara privatnom"
+        f = subprocess.run(["ssh-keygen", "-lf", key], capture_output=True, text=True)
+        if f.returncode == 0 and f.stdout.split():
+            info["fingerprint"] = f.stdout.split()[1]
+        return info
+
+    # --------------------------------------------------------------- SSH ---
+    def _call(self, st, kid, args, stdin=None, timeout=30):
+        host, port = st.get("host"), str(st.get("port") or 22)
+        if not host:
+            raise PveError("Proxmox pristup nije postavljen", "none")
+        key = self.key_file(kid)
+        if not os.path.exists(key):
+            raise PveError("ključ za Proxmox ne postoji", "key_missing")
+        sd = self._sshdir()
+        cmd = ["ssh", "-p", port, "-i", key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+               "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
+               "-o", f"UserKnownHostsFile={os.path.join(sd, 'pve_known_hosts')}", "-o", "LogLevel=ERROR",
+               "-o", "ControlMaster=auto", "-o", f"ControlPath={os.path.join(sd, 'cm-pve-' + kid)}",
+               "-o", "ControlPersist=60", f"root@{host}", " ".join(str(a) for a in args)]
+        try:
+            p = subprocess.run(cmd, input=stdin or "", capture_output=True, text=True, timeout=timeout)
+        except FileNotFoundError:
+            raise PveError("Naredba 'ssh' nije instalirana (apt install openssh-client)")
+        except subprocess.TimeoutExpired:
+            raise PveError("Proxmox nije odgovorio na vrijeme", "unreachable")
+        err = (p.stderr or "").strip()
+        if p.returncode == 255:
+            low = err.lower()
+            if "permission denied" in low:
+                raise PveError("Proxmox je odbio ključ", "auth")
+            if "host key verification failed" in low or "identification has changed" in low:
+                raise PveError("Host ključ Proxmoxa se promijenio (reinstalacija?). Napravi novo dopuštenje.", "hostkey")
+            raise PveError(f"Ne mogu se spojiti na {host}:{port}: {err[:200] or 'nepoznata greška'}", "unreachable")
+        out = (p.stdout or "").strip().splitlines()
+        try:
+            res = json.loads(out[-1]) if out else {}
+        except ValueError:
+            raise PveError("Agent na Proxmoxu je vratio neočekivan odgovor: " + (out[-1] if out else err)[:200], "agent")
+        if not res.get("ok"):
+            raise PveError(res.get("error") or "agent je javio grešku", "agent")
+        return res
+
+    def call(self, args, stdin=None, timeout=30):
+        with self.lock:
+            st = self.load()
+        act = st.get("active") or {}
+        if not act.get("kid"):
+            raise PveError("Proxmox pristup nije postavljen - na kartici Migracija klikni 'Postavi pristup'", "none")
+        try:
+            return self._call(st, act["kid"], args, stdin, timeout)
+        except PveError as e:
+            if e.kind == "auth":
+                cur = self.local_ip(st["host"], st.get("port") or 22)
+                if cur and act.get("ip") and cur != act["ip"]:
+                    raise PveError(f"IP adresa JellyCleana se promijenila ({act['ip']} → {cur}) pa Proxmox više ne "
+                                   "prihvaća ključ. Na kartici Migracija klikni 'Novo dopuštenje'.", "ip_changed")
+                raise PveError("Proxmox više ne prihvaća ključ JellyCleana. Na kartici Migracija klikni 'Novo dopuštenje'.", "auth")
+            raise
+
+    # ------------------------------------------------------------ provjera ---
+    def status(self, check=True):
+        with self.lock:
+            st = self.load()
+            host, port = st.get("host"), st.get("port") or 22
+            res = {"host": host, "port": port, "state": "none", "message": None,
+                   "bundled": {"migrate": _src_version(PVE_MIGRATE_SRC, r'^SCRIPT_VERSION="([^"]+)"'),
+                               "agent": _src_version(PVE_AGENT_SRC, r'^AGENT_VERSION=(\d+)')},
+                   "current_ip": self.local_ip(host, port) if host else None,
+                   "active": None, "pending": None, "remote": None, "rotated": None, "outdated": False,
+                   "checked": now_iso()}
+            if not (res["bundled"]["migrate"] and res["bundled"]["agent"]):
+                res["state"], res["message"] = "error", f"U instalaciji JellyCleana nedostaju skripte u {PVE_SRC_DIR} - nadogradi JellyClean."
+            inst = st.get("inst")
+            pend = st.get("pending")
+            # 1) novi ključ čeka da se naredba pokrene na Proxmoxu - radi li već?
+            if pend and check and host:
+                try:
+                    r = self._call(st, pend["kid"], ["ping"])
+                    if r.get("key") == f"{inst}:{pend['kid']}":
+                        old = (st.get("active") or {}).get("kid")
+                        st["active"] = dict(pend, activated=now_iso())
+                        st.pop("pending", None)
+                        self.save(st)
+                        if old and old != pend["kid"]:
+                            self._drop_key(old)
+                        res["rotated"] = {"old": old, "new": pend["kid"]}
+                        log(f"Proxmox pristup: aktiviran ključ {pend['kid']}" + (f", stari {old} obrisan" if old else ""))
+                        pend = None
+                except PveError:
+                    pass
+            if pend:
+                res["pending"] = {"kid": pend["kid"], "ip": pend.get("ip"), "created": pend.get("created")}
+            act = st.get("active")
+            if not act:
+                if res["state"] == "none" and pend:
+                    res["state"] = "pending"
+                self.last = res
+                return res
+            ki = self.key_info(act["kid"])
+            res["active"] = {"kid": act["kid"], "ip": act.get("ip"), "created": act.get("created"),
+                             "activated": act.get("activated"), "fingerprint": ki["fingerprint"],
+                             "fixed_perms": ki["fixed_perms"], "problem": ki["problem"]}
+            ip_changed = bool(res["current_ip"] and act.get("ip") and res["current_ip"] != act["ip"])
+            res["ip_changed"] = ip_changed
+            if ki["problem"]:
+                res["state"], res["message"] = "key_missing", f"Ključ za Proxmox: {ki['problem']}. Napravi novo dopuštenje."
+            elif not check:
+                res["state"] = "unchecked"
+            else:
+                try:
+                    r = self._call(st, act["kid"], ["ping"])
+                    res["remote"] = {k: r.get(k) for k in ("host", "pve", "agent", "migrate", "from", "running", "key")}
+                    if r.get("key") != f"{inst}:{act['kid']}":
+                        res["state"], res["message"] = "key_mismatch", ("Agent na Proxmoxu prijavio je drugi ključ "
+                                                                         f"({r.get('key')}). Napravi novo dopuštenje.")
+                    else:
+                        res["state"] = "ok"
+                        b = res["bundled"]
+                        res["outdated"] = bool(b["migrate"] and (str(r.get("agent")) != str(b["agent"]) or r.get("migrate") != b["migrate"]))
+                        if ip_changed:
+                            res["message"] = (f"JellyClean sada izlazi s adrese {res['current_ip']}, a dopuštenje je za "
+                                              f"{act['ip']}. Veza zasad radi, ali preporučuje se novo dopuštenje.")
+                except PveError as e:
+                    if e.kind == "auth":
+                        res["state"] = "ip_changed" if ip_changed else "key_rejected"
+                        res["message"] = (f"IP adresa JellyCleana se promijenila ({act.get('ip')} → {res['current_ip']}). "
+                                          "Proxmox zato više ne prihvaća ključ - napravi novo dopuštenje; stari ključ će se obrisati."
+                                          if ip_changed else
+                                          "Proxmox ne prihvaća ključ (uklonjen iz authorized_keys?). Napravi novo dopuštenje.")
+                    else:
+                        res["state"], res["message"] = e.kind if e.kind in ("unreachable", "hostkey") else "error", str(e)
+            self.last = res
+            return res
+
+    # ---------------------------------------------- postavljanje / rotacija ---
+    def setup(self, host, port, http_host):
+        host = (host or "").strip()
+        if not _PVE_HOST_RE.match(host):
+            raise PveError("Upiši IP adresu ili ime Proxmox hosta")
+        try:
+            port = int(port or 22)
+            assert 0 < port < 65536
+        except (ValueError, AssertionError):
+            raise PveError("Neispravan SSH port")
+        if not (os.path.exists(PVE_AGENT_SRC) and os.path.exists(PVE_MIGRATE_SRC)):
+            raise PveError(f"U instalaciji JellyCleana nedostaju skripte u {PVE_SRC_DIR} - nadogradi JellyClean.")
+        ip = self.local_ip(host, port)
+        if not ip:
+            raise PveError(f"Ne mogu odrediti adresu s koje JellyClean dolazi do {host} (je li adresa ispravna?)")
+        with self.lock:
+            st = self.load()
+            inst = self._inst(st)
+            # korisnik upravo izričito odobrava pristup: zaboravi stari host ključ (npr. nakon reinstalacije)
+            subprocess.run(["ssh-keygen", "-R", host, "-f", os.path.join(self._sshdir(), "pve_known_hosts")],
+                           capture_output=True)
+            old_p = (st.get("pending") or {}).get("kid")
+            if old_p:
+                self._drop_key(old_p)
+            kid = secrets.token_hex(4)
+            key = self.key_file(kid)
+            r = subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", f"jellyclean-pve {inst}:{kid}", "-f", key],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                raise PveError("SSH ključ se ne može napraviti: " + (r.stderr or "").strip()[:200])
+            os.chmod(key, 0o600)
+            st.update(host=host, port=port)
+            st["pending"] = {"kid": kid, "ip": ip, "created": now_iso()}
+            self.save(st)
+            now = time.time()
+            for t, (_, exp) in list(PVE_TOKENS.items()):
+                if exp < now:
+                    PVE_TOKENS.pop(t, None)
+            tok = secrets.token_urlsafe(18)
+            PVE_TOKENS[tok] = (kid, now + self.TOKEN_MIN * 60)
+        script = self.setup_script(kid)
+        sha = hashlib.sha256(script.encode()).hexdigest()
+        url = f"http://{http_host}/api/pve/setup.sh?t={tok}"
+        tmpf = "/tmp/jellyclean-pve.sh"
+        return {"url": url, "sha256": sha, "ip": ip, "host": host, "kid": kid, "expires_min": self.TOKEN_MIN,
+                "replaces": (st.get("active") or {}).get("kid"),
+                "command": f"curl -fsSL '{url}' -o {tmpf} && echo '{sha}  {tmpf}' | sha256sum -c --quiet && bash {tmpf}; rm -f {tmpf}",
+                "simple": f"curl -fsSL '{url}' | bash"}
+
+    def script_for_token(self, tok):
+        ent = PVE_TOKENS.get(tok or "")
+        if not ent or ent[1] < time.time():
+            return None
+        st = self.load()
+        if (st.get("pending") or {}).get("kid") != ent[0]:
+            return None
+        return self.setup_script(ent[0])
+
+    def setup_script(self, kid):
+        st = self.load()
+        pend = st.get("pending") or {}
+        if pend.get("kid") != kid:
+            raise PveError("ključ više nije aktualan")
+        inst = st["inst"]
+        with open(self.key_file(kid) + ".pub", encoding="utf-8") as f:
+            pub = f.read().strip()
+        with open(PVE_AGENT_SRC, encoding="utf-8") as f:
+            agent = f.read()
+        with open(PVE_MIGRATE_SRC, encoding="utf-8") as f:
+            mig = f.read()
+        for body, delim in ((agent, "JC_AGENT_EOF"), (mig, "JC_MIGRATE_EOF")):
+            if re.search(rf"^{delim}$", body, re.M):
+                raise PveError("skripta sadrži graničnik heredoca")
+        q = shlex.quote
+        return f"""#!/bin/bash
+# JellyClean {APP_VERSION} - pristup Proxmoxu za migraciju Jellyfina (Docker → LXC)
+# Pokreni kao root u shellu Proxmox hosta.
+#  • instalira /usr/local/sbin/jellyclean-pve-agent i /usr/local/sbin/jellyfin-docker2lxc
+#  • u authorized_keys roota upisuje ključ JellyCleana koji smije pokrenuti SAMO agenta i samo s {pend.get('ip')}
+#  • briše sve prethodne ključeve ovog JellyCleana (ID {inst})
+set -euo pipefail
+INST={q(inst)}; KEYID={q(kid)}; FROM={q(pend.get('ip') or '')}
+PUB={q(pub)}
+AGENT=/usr/local/sbin/jellyclean-pve-agent; MIG=/usr/local/sbin/jellyfin-docker2lxc
+say() {{ printf '\\033[1;36m==>\\033[0m %s\\n' "$*"; }}
+die() {{ printf '\\033[1;31mGREŠKA:\\033[0m %s\\n' "$*" >&2; exit 1; }}
+[ "$(id -u)" = 0 ] || die "pokreni kao root"
+command -v pct >/dev/null 2>&1 && command -v pveversion >/dev/null 2>&1 || die "ovo nije Proxmox VE host ($(hostname)) - naredbu pokreni u shellu Proxmoxa"
+[ -n "$FROM" ] || die "nedostaje IP adresa JellyCleana"
+
+say "1/4 Potrebni alati"
+if ! command -v jq >/dev/null 2>&1; then apt-get update -qq && apt-get install -y -qq jq >/dev/null || die "jq se ne može instalirati"; fi
+command -v systemd-run >/dev/null 2>&1 || die "systemd-run nije dostupan"
+
+say "2/4 Agent i migracijska skripta"
+umask 022
+cat > "$AGENT.new" <<'JC_AGENT_EOF'
+{agent.rstrip(chr(10))}
+JC_AGENT_EOF
+cat > "$MIG.new" <<'JC_MIGRATE_EOF'
+{mig.rstrip(chr(10))}
+JC_MIGRATE_EOF
+bash -n "$AGENT.new" && bash -n "$MIG.new" || {{ rm -f "$AGENT.new" "$MIG.new"; die "preuzete skripte nisu ispravne"; }}
+chown root:root "$AGENT.new" "$MIG.new"; chmod 755 "$AGENT.new" "$MIG.new"
+mv -f "$AGENT.new" "$AGENT"; mv -f "$MIG.new" "$MIG"
+echo "    agent v$(sed -n 's/^AGENT_VERSION=//p' "$AGENT"), migracijska skripta v$(sed -n 's/^SCRIPT_VERSION="\\(.*\\)"/\\1/p' "$MIG" | head -n1)"
+
+say "3/4 Ključ JellyCleana: samo s $FROM, samo agent"
+install -d -m 700 /root/.ssh
+[ -e /root/.ssh/authorized_keys ] || {{ touch /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys; }}
+AK=$(readlink -f /root/.ssh/authorized_keys)
+OLD=$(grep -cF " jellyclean-pve $INST:" "$AK" || true)
+T=$(mktemp)
+grep -vF " jellyclean-pve $INST:" "$AK" > "$T" || true
+printf 'from="%s",command="%s %s:%s",restrict %s\\n' "$FROM" "$AGENT" "$INST" "$KEYID" "$PUB" >> "$T"
+cat "$T" > "$AK"; rm -f "$T"      # pisanje u postojeću datoteku čuva poveznicu na /etc/pve/priv
+if [ "${{OLD:-0}}" -gt 0 ]; then echo "    obrisano starih ključeva ovog JellyCleana: $OLD"; fi
+
+say "4/4 Provjera"
+grep -qF " jellyclean-pve $INST:$KEYID" "$AK" || die "ključ nije upisan u $AK"
+if ! sshd -T 2>/dev/null | grep -qiE '^permitrootlogin (yes|prohibit-password|without-password)'; then
+  echo "UPOZORENJE: sshd možda ne dopušta prijavu roota ključem (PermitRootLogin)" >&2
+fi
+echo "Gotovo. U JellyCleanu klikni 'Pokrenuo sam - provjeri ključ'."
+"""
+
+    def revoke(self):
+        with self.lock:
+            st = self.load()
+            act, pend = st.get("active") or {}, st.get("pending") or {}
+            remote, err = False, None
+            if act.get("kid"):
+                try:
+                    self._call(st, act["kid"], ["revoke"])
+                    remote = True
+                except PveError as e:
+                    err = str(e)
+            for k in (act.get("kid"), pend.get("kid")):
+                if k:
+                    self._drop_key(k)
+            inst = st.get("inst")
+            self.save({"inst": inst} if inst else {})
+            self.last = None
+            return {"ok": True, "remote_removed": remote, "error": err,
+                    "manual": None if remote or not inst else
+                    f"sed -i '/ jellyclean-pve {inst}:/d' \"$(readlink -f /root/.ssh/authorized_keys)\""}
+
+    # ------------------------------------------------------------ migracija ---
+    def mig_start(self):
+        st = self.status(check=True)
+        if st["state"] != "ok":
+            raise PveError(st.get("message") or "Proxmox pristup ne radi")
+        if st.get("outdated"):
+            raise PveError("Agent ili migracijska skripta na Proxmoxu su zastarjeli - klikni 'Ažuriraj na Proxmoxu'.")
+        return self.call(["start"])
+
+    def mig_status(self, offset):
+        return self.call(["status", int(offset or 0)])
+
+    def mig_answer(self, qid, value, cancel=False):
+        if isinstance(value, list):
+            value = [str(v)[:500] for v in value][:200]
+        else:
+            value = str(value if value is not None else "")[:4000]
+        body = json.dumps({"id": int(qid), "value": value, "cancel": bool(cancel)})
+        return self.call(["answer", int(qid)], stdin=body)
+
+    def mig_cancel(self):
+        return self.call(["cancel"])
+
+    def mig_log(self):
+        return self.call(["log"])
+
+
+PVE = PveAccess()
+
+
 def scheduler():
     last_scan = time.time()
     last_purge = 0
+    last_pve = 0
     while True:
         time.sleep(60)
         try:
+            if time.time() - last_pve > 1800 and PVE.load().get("active"):
+                last_pve = time.time()
+                r = PVE.status(check=True)
+                if r["state"] not in ("ok", "unchecked"):
+                    log(f"Proxmox pristup: {r['state']} - {r.get('message') or ''}")
             if CFG["scan_hours"] > 0 and time.time() - last_scan > CFG["scan_hours"] * 3600:
                 last_scan = time.time()
                 run_scan()
@@ -3627,6 +4056,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
+        if u.path == "/api/pve/setup.sh":
+            t = (urllib.parse.parse_qs(u.query).get("t") or [""])[0]
+            try:
+                script = PVE.script_for_token(t)
+            except (PveError, OSError):
+                script = None
+            if not script:
+                return self._send(403, "echo 'JellyClean: poveznica je istekla ili nije ispravna - napravi novu u sučelju (Migracija)' >&2; exit 1\n",
+                                  "text/x-shellscript; charset=utf-8")
+            return self._send(200, script, "text/x-shellscript; charset=utf-8")
         if u.path == "/api/servers/bootstrap.sh":
             t = (urllib.parse.parse_qs(u.query).get("t") or [""])[0]
             ent = BOOT_TOKENS.get(t)
@@ -3657,6 +4096,12 @@ class Handler(BaseHTTPRequestHandler):
             if u.path in ("/", "/index.html"):
                 with open(os.path.join(STATIC_DIR, "index.html"), "rb") as f:
                     return self._send(200, f.read(), "text/html; charset=utf-8")
+            if u.path == "/api/pve":
+                return self._send(200, PVE.status(check=q.get("check", "1") != "0"))
+            if u.path == "/api/pve/migrate":
+                return self._send(200, PVE.mig_status(q.get("offset") or 0))
+            if u.path == "/api/pve/log":
+                return self._send(200, PVE.mig_log())
             if u.path == "/api/health":
                 return self._send(200, {"ok": True, "version": APP_VERSION})
             if u.path == "/api/overview":
@@ -3821,6 +4266,19 @@ class Handler(BaseHTTPRequestHandler):
                                             "wget": f"wget -qO- '{url}' | sudo sh", "expires_min": 30,
                                             "user": sv.cfg["ssh_user"], "host": sv.cfg["ssh_host"]})
                 return self._send(404, {"error": "Nepoznata radnja"})
+            if u.path == "/api/pve/setup":
+                host = self.headers.get("Host") or f"{CFG['bind']}:{CFG['port']}"
+                return self._send(200, PVE.setup(body.get("host"), body.get("port"), host))
+            if u.path == "/api/pve/verify":
+                return self._send(200, PVE.status(check=True))
+            if u.path == "/api/pve/revoke":
+                return self._send(200, PVE.revoke())
+            if u.path == "/api/pve/migrate/start":
+                return self._send(200, PVE.mig_start())
+            if u.path == "/api/pve/migrate/answer":
+                return self._send(200, PVE.mig_answer(body.get("id"), body.get("value"), body.get("cancel")))
+            if u.path == "/api/pve/migrate/cancel":
+                return self._send(200, PVE.mig_cancel())
             if u.path == "/api/gpumon/stop":
                 return self._send(200, GMON.stop())
             if u.path == "/api/nvpatch/verify":

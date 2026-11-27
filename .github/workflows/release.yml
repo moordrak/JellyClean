@@ -35,6 +35,8 @@ jobs:
           python3 -m py_compile app.py
           bash -n proxmox/create-lxc.sh
           bash -n proxmox/install-in-lxc.sh
+          bash -n proxmox/jellyclean-pve-agent.sh
+          bash -n proxmox/jellyfin-docker2lxc.sh
 
       - name: Pakiranje
         if: steps.v.outputs.exists == 'false'
@@ -43,7 +45,7 @@ jobs:
           mkdir -p dist
           git archive --format=tar.gz --prefix=jellyclean-$VER/ -o dist/jellyclean-$VER.tar.gz HEAD
           git archive --format=zip    --prefix=jellyclean-$VER/ -o dist/jellyclean-$VER.zip HEAD
-          cp proxmox/create-lxc.sh dist/
+          cp proxmox/create-lxc.sh proxmox/jellyfin-docker2lxc.sh dist/
           (cd dist && sha256sum * > SHA256SUMS)
 
       - name: Kreiraj release
