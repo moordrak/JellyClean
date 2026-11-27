@@ -1733,7 +1733,7 @@ function renderBkJob(){
     ${j.error?`<div class="note warn" style="margin:10px 0 0">${esc(j.error)}</div>`:''}`;
   const r=j.result;
   if(r && !j.running){
-    if(r.users){  // vraćanje korisnika
+    if(Array.isArray(r.users)){  // vraćanje korisnika
       h+=`<table style="margin-top:10px"><thead><tr><th>Korisnik</th><th class="num">Prepoznato</th><th class="num">Upisano</th><th class="num">Nije pronađeno</th><th class="num">Playliste</th><th></th></tr></thead><tbody>${
         r.users.map(u=>u.skipped?`<tr><td>${esc(u.name)}</td><td colspan="5" class="sub">${esc(u.skipped)}</td></tr>`:
           `<tr><td>${esc(u.name)}</td><td class="num">${u.matched}</td><td class="num">${u.applied}${u.errors?` <span class="pill bad">${u.errors} greš.</span>`:''}</td><td class="num">${u.unmatched_count}</td><td class="num">${u.playlists}</td>
