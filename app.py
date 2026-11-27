@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -5274,27 +5274,213 @@ def jf_list():
             "missing_count": len(missing), "path_map": CFG["path_map"]}
 
 
+# ---------------- prijava (sesije umjesto Basic auth popupa) ----------------
+import hmac
+
+
+class Auth:
+    """Korisnik i lozinka: DATA_DIR/auth.json (ako postoji, nakon izmjene u sučelju), inače AUTH_USER/AUTH_PASS iz okoline.
+    Sesija je potpisani kolačić (HMAC); vrijedi i nakon restarta, a promjena lozinke poništava sve sesije."""
+    COOKIE = "jc_session"
+    SHORT = 12 * 3600          # bez "zapamti me"
+    LONG = 30 * 86400          # "zapamti me"
+    ITER = 240000
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.fails = {}        # ip -> [broj, zaključano_do]
+        self.revoked = {}      # potpis -> istek (odjava pojedine sesije)
+        self.file = os.path.join(CFG["data_dir"], "auth.json")
+        self.d = None
+        self.load()
+
+    # ---- pohrana ----
+    def load(self):
+        d = None
+        try:
+            with open(self.file, encoding="utf-8") as f:
+                d = json.load(f)
+            if not (d.get("user") and d.get("hash") and d.get("salt")):
+                d = None
+        except (OSError, ValueError):
+            d = None
+        if not d:
+            d = {"user": CFG["auth_user"] or "", "env_pass": CFG["auth_pass"] or "", "source": "env"}
+        else:
+            d["source"] = "file"
+        d.setdefault("gen", 0)
+        d["secret"] = self._secret()
+        self.d = d
+
+    def _secret(self):
+        p = os.path.join(CFG["data_dir"], "session.key")
+        try:
+            with open(p, "rb") as f:
+                k = f.read()
+            if len(k) >= 32:
+                return k
+        except OSError:
+            pass
+        k = secrets.token_bytes(32)
+        os.makedirs(CFG["data_dir"], exist_ok=True)
+        fd = os.open(p + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(k)
+        os.replace(p + ".tmp", p)
+        return k
+
+    def enabled(self):
+        return bool(self.d["user"])
+
+    def user(self):
+        return self.d["user"]
+
+    def _hash(self, pw, salt):
+        return hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(salt), self.ITER).hex()
+
+    def check(self, user, pw):
+        d = self.d
+        ok_u = hmac.compare_digest(hashlib.sha256(user.encode()).digest(), hashlib.sha256(d["user"].encode()).digest())
+        if d["source"] == "file":
+            ok_p = hmac.compare_digest(self._hash(pw, d["salt"]), d["hash"])
+        else:
+            ok_p = hmac.compare_digest(hashlib.sha256(pw.encode()).digest(), hashlib.sha256(d["env_pass"].encode()).digest())
+        return ok_u and ok_p
+
+    # ---- sesije ----
+    def _sign(self, payload):
+        return hmac.new(self.d["secret"], f"{payload}|{self.d['user']}|{self.d['gen']}".encode(), hashlib.sha256).hexdigest()
+
+    def issue(self, remember):
+        exp = int(time.time()) + (self.LONG if remember else self.SHORT)
+        payload = f"{exp}.{secrets.token_hex(12)}.{1 if remember else 0}"
+        return payload + "." + self._sign(payload), (self.LONG if remember else None)
+
+    def session_ok(self, tok):
+        try:
+            exp, nonce, rem, sig = (tok or "").split(".")
+            if int(exp) < time.time() or sig in self.revoked:
+                return False
+            return hmac.compare_digest(sig, self._sign(f"{exp}.{nonce}.{rem}"))
+        except ValueError:
+            return False
+
+    def revoke(self, tok):
+        try:
+            exp, _, _, sig = tok.split(".")
+            with self.lock:
+                now = time.time()
+                self.revoked = {k: v for k, v in self.revoked.items() if v > now}
+                self.revoked[sig] = int(exp)
+        except ValueError:
+            pass
+
+    # ---- zaštita od pogađanja ----
+    def locked(self, ip):
+        f = self.fails.get(ip)
+        return max(0, int(f[1] - time.time())) if f else 0
+
+    def failed(self, ip):
+        with self.lock:
+            n, _ = self.fails.get(ip, [0, 0])
+            n += 1
+            wait = 0 if n < 5 else min(900, 15 * 2 ** (n - 5))
+            self.fails[ip] = [n, time.time() + wait]
+            if len(self.fails) > 5000:
+                self.fails.clear()
+
+    def succeeded(self, ip):
+        with self.lock:
+            self.fails.pop(ip, None)
+
+    # ---- izmjena ----
+    def change(self, cur, new_user, new_pw):
+        new_user = (new_user or "").strip() or self.d["user"] or "admin"
+        if self.enabled() and not self.check(self.d["user"], cur or ""):
+            raise PermissionError("Trenutna lozinka nije točna")
+        if not re.fullmatch(r"[A-Za-z0-9._@-]{1,64}", new_user):
+            raise ValueError("Korisničko ime smije imati slova, brojke i . _ @ - (do 64 znaka)")
+        if new_pw is None or new_pw == "":
+            if self.d["source"] != "file" and self.enabled():
+                new_pw = self.d["env_pass"]   # samo promjena imena, lozinka ostaje
+            elif self.enabled():
+                salt, h = self.d["salt"], self.d["hash"]
+                new_pw = None
+            else:
+                raise ValueError("Upiši novu lozinku")
+        if new_pw is not None:
+            if len(new_pw) < 8:
+                raise ValueError("Lozinka mora imati barem 8 znakova")
+            if len(new_pw) > 256:
+                raise ValueError("Lozinka je preduga")
+            salt = secrets.token_hex(16)
+            h = self._hash(new_pw, salt)
+        d = {"user": new_user, "salt": salt, "hash": h, "algo": f"pbkdf2_sha256:{self.ITER}",
+             "gen": int(self.d.get("gen", 0)) + 1, "changed": now_iso()}
+        os.makedirs(CFG["data_dir"], exist_ok=True)
+        fd = os.open(self.file + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=1)
+        os.replace(self.file + ".tmp", self.file)
+        self.load()
+        log(f"Prijava: podaci za prijavu promijenjeni (korisnik {new_user}); sve ostale sesije su odjavljene")
+
+    def info(self):
+        return {"enabled": self.enabled(), "user": self.d["user"], "source": self.d["source"],
+                "changed": self.d.get("changed")}
+
+
+AUTH = Auth()
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "JellyClean/" + APP_VERSION
 
     def log_message(self, fmt, *args):
         pass
 
+    def _cookie(self, name):
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == name:
+                return v
+        return ""
+
+    def _client_ip(self):
+        return self.client_address[0] if self.client_address else "?"
+
+    def _is_https(self):
+        return (self.headers.get("X-Forwarded-Proto") or "").lower() == "https"
+
     def _auth_ok(self):
-        if not CFG["auth_user"]:
+        if not AUTH.enabled():
+            return True
+        if AUTH.session_ok(self._cookie(AUTH.COOKIE)):
             return True
         h = self.headers.get("Authorization", "")
-        if h.startswith("Basic "):
+        if h.startswith("Basic "):   # skripte / curl i dalje mogu koristiti Basic auth
             try:
                 u, p = base64.b64decode(h[6:]).decode().split(":", 1)
-                ok_u = hashlib.sha256(u.encode()).digest() == hashlib.sha256(CFG["auth_user"].encode()).digest()
-                ok_p = hashlib.sha256(p.encode()).digest() == hashlib.sha256(CFG["auth_pass"].encode()).digest()
-                return ok_u and ok_p
             except Exception:
                 return False
+            ip = self._client_ip()
+            if AUTH.locked(ip):
+                return False
+            if AUTH.check(u, p):
+                AUTH.succeeded(ip)
+                return True
+            AUTH.failed(ip)
         return False
 
-    def _send(self, code, body, ctype="application/json; charset=utf-8"):
+    def _set_cookie(self, tok, max_age):
+        c = f"{AUTH.COOKIE}={tok}; Path=/; HttpOnly; SameSite=Strict"
+        if max_age is not None:
+            c += f"; Max-Age={max_age}"
+        if self._is_https():
+            c += "; Secure"
+        return c
+
+    def _send(self, code, body, ctype="application/json; charset=utf-8", headers=None):
         if isinstance(body, (dict, list)):
             body = json.dumps(body, ensure_ascii=False).encode()
         elif isinstance(body, str):
@@ -5304,14 +5490,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        for k, v in (headers or []):
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
     def _deny(self):
-        self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="JellyClean"')
-        self.send_header("Content-Length", "0")
-        self.end_headers()
+        u = urllib.parse.urlparse(self.path).path
+        if u.startswith("/api/"):
+            return self._send(401, {"error": "Potrebna je prijava", "login": True})
+        with open(os.path.join(STATIC_DIR, "login.html"), "rb") as f:
+            return self._send(200, f.read(), "text/html; charset=utf-8",
+                              [("X-Frame-Options", "DENY"), ("Referrer-Policy", "no-referrer")])
 
     def _body(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -5362,6 +5552,8 @@ class Handler(BaseHTTPRequestHandler):
             _CUR.srv = None
 
     def _do_GET(self):
+        if urllib.parse.urlparse(self.path).path == "/api/health":
+            return self._send(200, {"ok": True})
         if not self._auth_ok():
             return self._deny()
         u = urllib.parse.urlparse(self.path)
@@ -5370,6 +5562,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path in ("/", "/index.html"):
                 with open(os.path.join(STATIC_DIR, "index.html"), "rb") as f:
                     return self._send(200, f.read(), "text/html; charset=utf-8")
+            if u.path == "/api/account":
+                return self._send(200, AUTH.info())
             if u.path == "/api/storage":
                 return self._send(200, STORE.status())
             if u.path == "/api/backup":
@@ -5483,12 +5677,47 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, {"error": str(e)})
 
     def _do_POST(self):
-        if not self._auth_ok():
-            return self._deny()
         # Jednostavna CSRF zaštita: traži custom header koji forma s drugog sitea ne može poslati
         if self.headers.get("X-Requested-With") != "JellyClean":
             return self._send(403, {"error": "Nedostaje X-Requested-With"})
         u = urllib.parse.urlparse(self.path)
+        if u.path == "/api/login":
+            try:
+                body = self._body()
+            except ValueError:
+                return self._send(400, {"error": "Neispravan zahtjev"})
+            ip = self._client_ip()
+            w = AUTH.locked(ip)
+            if w:
+                return self._send(429, {"error": f"Previše neuspjelih pokušaja - pričekaj {w} s", "wait": w})
+            if not AUTH.enabled():
+                return self._send(200, {"ok": True})
+            if not AUTH.check(str(body.get("user") or ""), str(body.get("password") or "")):
+                AUTH.failed(ip)
+                log(f"Prijava: neuspjela prijava s {ip}")
+                time.sleep(0.6)
+                return self._send(401, {"error": "Pogrešno korisničko ime ili lozinka", "wait": AUTH.locked(ip)})
+            AUTH.succeeded(ip)
+            tok, age = AUTH.issue(bool(body.get("remember")))
+            return self._send(200, {"ok": True}, headers=[("Set-Cookie", self._set_cookie(tok, age))])
+        if u.path == "/api/logout":
+            tok = self._cookie(AUTH.COOKIE)
+            if tok:
+                AUTH.revoke(tok)
+            return self._send(200, {"ok": True}, headers=[("Set-Cookie", self._set_cookie("", 0))])
+        if not self._auth_ok():
+            return self._deny()
+        if u.path == "/api/account/password":
+            try:
+                body = self._body()
+                AUTH.change(body.get("current"), body.get("user"), body.get("password"))
+            except PermissionError as e:
+                time.sleep(0.6)
+                return self._send(403, {"error": str(e)})
+            except (ValueError, OSError) as e:
+                return self._send(400, {"error": str(e)})
+            tok, age = AUTH.issue(False)
+            return self._send(200, {"ok": True, **AUTH.info()}, headers=[("Set-Cookie", self._set_cookie(tok, age))])
         if u.path == "/api/backup/upload":
             try:
                 loc = (urllib.parse.parse_qs(u.query).get("loc") or ["local"])[0]
@@ -5678,8 +5907,10 @@ def main():
                 ", SSH " + (f"{CFG['ssh_user']}@{CFG['ssh_host']}:{CFG['jf_config']}" if JFC.enabled() else "nije podešen"))
     log(f"  brisanje: {'da' if CFG['allow_delete'] else 'NE'}, kanta: {'da' if CFG['trash'] else 'ne'}"
         f" ({CFG['trash_days']} dana)")
-    if not CFG["auth_user"]:
-        log("  UPOZORENJE: AUTH_USER nije postavljen - sučelje je bez lozinke")
+    if not AUTH.enabled():
+        log("  UPOZORENJE: prijava nije postavljena - sučelje je bez lozinke (postavi je u sučelju: Račun)")
+    else:
+        log(f"  prijava: {AUTH.user()} ({'promijenjena u sučelju' if AUTH.d['source'] == 'file' else 'iz /etc/jellyclean.env'})")
     start_scan_bg()
     sync_all_servers(background=True)
     CtxThread(target=scheduler, daemon=True).start()

@@ -58,7 +58,7 @@ Web servis za pregled i čišćenje prostora na Jellyfin poslužitelju. Nema van
 | `TRASH_MODE` | `true` | `false` znači da je brisanje odmah trajno |
 | `TRASH_DAYS` | `7` | Nakon koliko dana se kanta automatski prazni (`0` znači nikad) |
 | `SCAN_INTERVAL_HOURS` | `6` | Koliko često se automatski ponovno skenira |
-| `AUTH_USER` / `AUTH_PASS` | | Basic auth. **Postavi ga**, jer sučelje može brisati datoteke |
+| `AUTH_USER` / `AUTH_PASS` | | Početni podaci za prijavu. **Postavi ih**, jer sučelje može brisati datoteke. Lozinka se mijenja u sučelju (vidi *Prijava*). |
 | `PORT` | `8095` | |
 | `JF_SSH_HOST` | `192.168.1.20` | Računalo na kojem radi Jellyfin (npr. VM s Dockerom), za čišćenje config mape |
 | `JF_SSH_USER` / `JF_SSH_PORT` | `root` / `22` | SSH korisnik i port |
@@ -296,4 +296,13 @@ Montiranje radi root pomoćni program `/usr/local/sbin/jellyclean-nas`. Servis J
 ```bash
 bash /opt/jellyclean/proxmox/lxc-post-update.sh
 ```
+
+## Prijava
+
+- Sučelje ima vlastitu stranicu za prijavu (nema više popupa preglednika). Opcija *Zapamti me* drži prijavu 30 dana, inače 12 sati.
+- Sesija je potpisani `HttpOnly` kolačić (`SameSite=Strict`, iza HTTPS proxyja i `Secure`). Vrijedi i nakon restarta i ažuriranja.
+- Nakon 5 pogrešnih pokušaja s iste adrese prijava se privremeno zaključava, sa sve duljim čekanjem (do 15 min).
+- **Promjena lozinke i korisničkog imena**: gumb s imenom u gornjem desnom kutu → *Promijeni lozinku*. Nova lozinka sprema se u `/var/lib/jellyclean/auth.json` (PBKDF2-SHA256, prava 600) i od tada ima prednost pred `AUTH_USER`/`AUTH_PASS`. Sve ostale prijave se odjavljuju.
+- **Zaboravljena lozinka**: s Proxmox hosta `pct exec <ID> -- rm /var/lib/jellyclean/auth.json && pct exec <ID> -- systemctl restart jellyclean`. Tada ponovno vrijedi lozinka iz `/etc/jellyclean.env`.
+- Skripte i `curl` i dalje mogu koristiti Basic auth (`curl -u korisnik:lozinka …`).
 

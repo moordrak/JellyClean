@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="hr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prijava · JellyClean</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23aa5cc3'/%3E%3Cstop offset='1' stop-color='%2300a4dc'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='15' fill='url(%23g)'/%3E%3Cpath d='M23 17.5v29a2 2 0 0 0 3 1.7l23.5-14.5a2 2 0 0 0 0-3.4L26 15.8a2 2 0 0 0-3 1.7z' fill='%23fff'/%3E%3Cpath d='M12 12l2.2 5.3L19.5 19.5l-5.3 2.2L12 27l-2.2-5.3L4.5 19.5l5.3-2.2z' fill='%23fff' opacity='.9'/%3E%3Ccircle cx='51' cy='51' r='3.2' fill='%23fff' opacity='.75'/%3E%3C/svg%3E">
+<meta name="theme-color" content="#0b0d12">
+<meta name="robots" content="noindex">
+<style>
+:root{--bg:#0b0d12;--panel:rgba(23,26,33,.72);--line:rgba(255,255,255,.09);--text:#e6e8ec;--muted:#8b93a3;--accent:#00a4dc;--accent2:#aa5cc3;--bad:#f85149;--warn:#d29922}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:grid;place-items:center;overflow:hidden;padding:20px}
+.bg{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+.bg i{position:absolute;border-radius:50%;filter:blur(90px);opacity:.45;animation:float 22s ease-in-out infinite alternate}
+.bg i:nth-child(1){width:520px;height:520px;background:var(--accent2);top:-160px;left:-140px}
+.bg i:nth-child(2){width:600px;height:600px;background:var(--accent);bottom:-220px;right:-180px;animation-duration:28s;opacity:.35}
+.bg i:nth-child(3){width:300px;height:300px;background:#3b4cca;top:45%;left:55%;animation-duration:18s;opacity:.25}
+.bg::after{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-size:44px 44px;mask-image:radial-gradient(ellipse at center,#000 30%,transparent 75%)}
+@keyframes float{to{transform:translate(60px,40px) scale(1.08)}}
+@media (prefers-reduced-motion:reduce){.bg i{animation:none}}
+.card{position:relative;z-index:1;width:100%;max-width:380px;background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:34px 30px 26px;
+  backdrop-filter:blur(22px) saturate(140%);-webkit-backdrop-filter:blur(22px) saturate(140%);box-shadow:0 30px 80px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06);animation:in .5s cubic-bezier(.2,.8,.2,1)}
+@keyframes in{from{opacity:0;transform:translateY(14px) scale(.98)}}
+.logo{width:58px;height:58px;margin:0 auto 14px;display:block;filter:drop-shadow(0 10px 24px rgba(0,164,220,.35))}
+h1{margin:0;text-align:center;font-size:24px;font-weight:700;letter-spacing:.2px}
+h1 span{background:linear-gradient(90deg,var(--accent2),var(--accent));-webkit-background-clip:text;background-clip:text;color:transparent}
+.tag{text-align:center;color:var(--muted);font-size:13px;margin:4px 0 26px}
+.f{position:relative;margin-bottom:14px}
+.f label{display:block;font-size:12px;color:var(--muted);margin:0 0 6px 2px;letter-spacing:.3px}
+.f .in{position:relative}
+.f svg.ic{position:absolute;left:13px;top:50%;transform:translateY(-50%);width:17px;height:17px;color:var(--muted);pointer-events:none;transition:color .2s}
+.f input{width:100%;height:44px;padding:0 42px 0 40px;border-radius:11px;border:1px solid var(--line);background:rgba(10,12,17,.6);color:var(--text);font:inherit;font-size:14.5px;outline:none;transition:border-color .2s,box-shadow .2s,background .2s}
+.f input:focus{border-color:rgba(0,164,220,.7);box-shadow:0 0 0 4px rgba(0,164,220,.15);background:rgba(10,12,17,.85)}
+.f .in:focus-within svg.ic{color:var(--accent)}
+.eye{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:32px;height:32px;border:0;background:none;color:var(--muted);cursor:pointer;border-radius:8px;display:grid;place-items:center}
+.eye:hover{color:var(--text);background:rgba(255,255,255,.06)}
+.eye svg{width:18px;height:18px}
+.caps{display:none;font-size:12px;color:var(--warn);margin:6px 0 0 2px}
+.row{display:flex;align-items:center;justify-content:space-between;margin:4px 0 20px}
+.chk{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;cursor:pointer;user-select:none}
+.chk input{appearance:none;width:17px;height:17px;border-radius:5px;border:1px solid rgba(255,255,255,.2);background:rgba(10,12,17,.6);display:grid;place-items:center;cursor:pointer;margin:0}
+.chk input:checked{background:linear-gradient(135deg,var(--accent2),var(--accent));border-color:transparent}
+.chk input:checked::after{content:"";width:9px;height:5px;border:2px solid #fff;border-top:0;border-right:0;transform:rotate(-45deg) translate(1px,-1px)}
+.chk input:focus-visible{box-shadow:0 0 0 3px rgba(0,164,220,.3)}
+button.go{width:100%;height:46px;border:0;border-radius:11px;cursor:pointer;color:#fff;font:inherit;font-size:15px;font-weight:600;letter-spacing:.2px;
+  background:linear-gradient(90deg,var(--accent2),var(--accent));background-size:150% 100%;box-shadow:0 10px 26px rgba(0,164,220,.28);transition:background-position .4s,transform .1s,box-shadow .2s,opacity .2s;display:flex;align-items:center;justify-content:center;gap:10px}
+button.go:hover{background-position:100% 0;box-shadow:0 12px 32px rgba(0,164,220,.4)}
+button.go:active{transform:translateY(1px)}
+button.go:disabled{opacity:.65;cursor:default}
+.spin{width:17px;height:17px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;display:none}
+.busy .spin{display:block}
+@keyframes sp{to{transform:rotate(360deg)}}
+.err{min-height:20px;margin:14px 0 0;text-align:center;font-size:13px;color:var(--bad);opacity:0;transition:opacity .2s}
+.err.show{opacity:1}
+.shake{animation:shake .4s}
+@keyframes shake{20%,60%{transform:translateX(-7px)}40%,80%{transform:translateX(7px)}}
+.foot{margin-top:18px;text-align:center;font-size:11.5px;color:rgba(139,147,163,.7)}
+</style>
+</head>
+<body>
+<div class="bg"><i></i><i></i><i></i></div>
+<form class="card" id="f" autocomplete="on" novalidate>
+  <svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#aa5cc3"/><stop offset="1" stop-color="#00a4dc"/></linearGradient></defs><rect width="64" height="64" rx="15" fill="url(#g)"/><path d="M23 17.5v29a2 2 0 0 0 3 1.7l23.5-14.5a2 2 0 0 0 0-3.4L26 15.8a2 2 0 0 0-3 1.7z" fill="#fff"/><path d="M12 12l2.2 5.3L19.5 19.5l-5.3 2.2L12 27l-2.2-5.3L4.5 19.5l5.3-2.2z" fill="#fff" opacity=".9"/><circle cx="51" cy="51" r="3.2" fill="#fff" opacity=".75"/></svg>
+  <h1><span>Jelly</span>Clean</h1>
+  <div class="tag">Prijavi se za nastavak</div>
+  <div class="f"><label for="u">Korisničko ime</label><div class="in">
+    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+    <input id="u" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus></div></div>
+  <div class="f"><label for="p">Lozinka</label><div class="in">
+    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+    <input id="p" name="password" type="password" autocomplete="current-password" required>
+    <button type="button" class="eye" id="eye" aria-label="Prikaži lozinku" title="Prikaži lozinku"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+    <div class="caps" id="caps">⇪ Caps Lock je uključen</div></div>
+  <div class="row"><label class="chk"><input type="checkbox" id="rem"> Zapamti me 30 dana</label></div>
+  <button class="go" id="go" type="submit"><span class="spin"></span><span id="gol">Prijava</span></button>
+  <div class="err" id="err" role="alert"></div>
+  <div class="foot">Pregled i čišćenje Jellyfin prostora</div>
+</form>
+<script>
+const $=s=>document.querySelector(s), f=$('#f'), err=$('#err'), go=$('#go'), gol=$('#gol');
+let timer=null;
+try{ const u=localStorage.getItem('jc-user'); if(u){ $('#u').value=u; $('#rem').checked=localStorage.getItem('jc-rem')==='1'; $('#p').focus(); } }catch(e){}
+$('#eye').onclick=()=>{ const p=$('#p'); p.type=p.type==='password'?'text':'password'; $('#eye').style.color=p.type==='text'?'var(--accent)':''; p.focus(); };
+$('#p').addEventListener('keyup',e=>{ if(e.getModifierState) $('#caps').style.display=e.getModifierState('CapsLock')?'block':'none'; });
+function show(msg){ err.textContent=msg; err.classList.add('show'); f.classList.remove('shake'); void f.offsetWidth; f.classList.add('shake'); }
+function lock(w){
+  clearInterval(timer); go.disabled=true;
+  const end=Date.now()+w*1000;
+  const tick=()=>{ const s=Math.ceil((end-Date.now())/1000); if(s<=0){ clearInterval(timer); go.disabled=false; gol.textContent='Prijava'; err.classList.remove('show'); return; } gol.textContent='Pričekaj '+s+' s'; };
+  tick(); timer=setInterval(tick,500);
+}
+f.addEventListener('submit',async e=>{
+  e.preventDefault(); err.classList.remove('show');
+  const user=$('#u').value.trim(), password=$('#p').value;
+  if(!user||!password){ show('Upiši korisničko ime i lozinku'); return; }
+  go.disabled=true; go.classList.add('busy');
+  try{
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'JellyClean'},body:JSON.stringify({user,password,remember:$('#rem').checked})});
+    let j={}; try{ j=await r.json(); }catch(_){}
+    if(r.ok){ try{ localStorage.setItem('jc-user',user); localStorage.setItem('jc-rem',$('#rem').checked?'1':'0'); }catch(_){} gol.textContent='Dobrodošao'; location.replace(location.pathname+location.search+location.hash); return; }
+    go.classList.remove('busy'); go.disabled=false;
+    show(j.error||('Greška '+r.status)); $('#p').select();
+    if(j.wait) lock(j.wait);
+  }catch(_){ go.classList.remove('busy'); go.disabled=false; show('JellyClean nije dostupan - provjeri vezu'); }
+});
+</script>
+</body>
+</html>
