@@ -38,6 +38,7 @@ Web servis za pregled i čišćenje prostora na Jellyfin poslužitelju. Nema van
   - rezultat: koliko tokova kartica stiže, preporučeni broj s rezervom i što ju je ograničilo (ograničenje sesija drivera ili snaga)
   - upozorava ako netko upravo gleda s transkodiranjem; test se može prekinuti
 - **Smeće i duplikati**: sample videi, nedovršena preuzimanja (`.part`, `.!qB`), `.exe` i `.url` datoteke iz releasea, rar arhive, prazne datoteke i mape, više verzija istog filma ili epizode.
+- **Backup i restore** (kartica *Backup i restore*): **puni backup** (baza, postavke, korisnici, pluginovi i statistika gledanja) i **korisnički backup** (gledanost, pozicija, favoriti, ocjene, playliste i postavke korisnika). Oba se vraćaju na isti ili potpuno drugi Jellyfin server (vidi [Backup i restore](#backup-i-restore)).
 - **Migracija Jellyfina** (kartica *Migracija*): premješta Jellyfin iz Docker kontejnera u novi Proxmox LXC sa samostalnim Jellyfinom, NVENC/QSV transkodiranjem i NFS medijima. Čarobnjak radi na Proxmox hostu, a pitanja se odgovaraju u sučelju JellyCleana. JellyClean na Proxmoxu nema shell (vidi [Migracija Jellyfina](#migracija-jellyfina-docker--proxmox-lxc)).
 - **Kanta**: obrisane stavke se premještaju u `.jellyclean-trash` unutar iste mape, što je trenutno jer se ništa ne kopira. Iz kante se mogu vratiti, a automatski se prazni nakon `TRASH_DAYS` dana.
 - **Hardlinkovi**: servis označava datoteke koje imaju još jednu kopiju (tipično *arr + qBittorrent) i upozorava da njihovo brisanje ne oslobađa prostor dok se ne obriše i torrent.
@@ -240,4 +241,37 @@ bash proxmox/jellyfin-docker2lxc.sh --resume   # nastavak nakon restarta hosta
 bash proxmox/jellyfin-docker2lxc.sh --text     # bez prozora
 bash proxmox/jellyfin-docker2lxc.sh --sync-nvidia <ID>   # nakon nadogradnje NVIDIA drajvera na hostu
 ```
+
+## Backup i restore
+
+Kartica **Backup i restore** radi dvije vrste sigurnosnih kopija. Kopije se spremaju u `DATA_DIR/backups` u JellyCleanu, mogu se preuzeti kao `.tar` i učitati u drugi JellyClean.
+
+### Puni backup (SSH)
+
+Sprema **sve** iz Jellyfinove mape: bazu (`jellyfin.db`), postavke (`*.xml`), korisnike i lozinke, ključeve uređaja, pluginove i njihove postavke, biblioteke (`root/`) i **statistiku gledanja** (`playback_reporting.db` plugina Playback Reporting). Po želji sprema i metapodatke i slike. Cache, logovi i privremene datoteke transkodiranja se ne spremaju.
+
+- Jellyfin se tijekom pakiranja **zaustavi** (preporučeno, za dosljednu bazu), a zatim ponovno pokrene.
+- **Vraćanje na isti server**: Jellyfin se zaustavi, trenutni podaci se premjeste u `.jellyclean-restore-<vrijeme>/prev` u Jellyfinovoj mapi, kopija se raspakira, vlasnik datoteka se postavi kao prije i Jellyfin se pokrene. Stari podaci ostaju dok ih ne obrišeš (*Podaci prije vraćanja → Obriši sve*).
+- **Vraćanje na drugi server** (prvo ga dodaj na kartici *Serveri*): isto, a uz to:
+  - putanje u postavkama i pluginovima prilagode se odredištu (npr. Docker `/config/data` → `/var/lib/jellyfin`), prema `/System/Info` obaju servera
+  - po želji **novi Server ID**, ako stari server i dalje radi
+  - provjerava se da odredišni Jellyfin nije stariji od izvornog
+  - ako su mediji na drugim putanjama, nakon vraćanja otvori **Provjera putanja**
+
+Treba SSH pristup Jellyfin računalu. Pomoćni program je nadograđen na verziju 11, pa na postojećim serverima jednom ponovno pokreni *Serveri → Postavi pristup*.
+
+### Korisnički backup (Jellyfin API)
+
+Za svakog odabranog korisnika sprema: odgledano, broj gledanja, datum zadnjeg gledanja, gdje je stao, favorite, ocjene (sviđa mi se / ne sviđa), playliste, osobne postavke (jezik zvuka i titlova, početna stranica…) i dozvole.
+
+Vraća se na **bilo koji** Jellyfin, pa i na potpuno novi server s drugim ID-ovima i putanjama. Stavke se prepoznaju redom po:
+1. istom ID-u (isti server)
+2. istoj putanji (ili zamjeni putanja koju upišeš, npr. `/nas/Gondolin => /mnt/media`)
+3. IMDb / TMDb / TVDb oznakama
+4. za epizode: oznakama ili nazivu serije te broju sezone i epizode
+5. nazivu i godini
+
+Korisnici se povezuju po imenu, a nepostojeći se po želji stvore s nasumičnom lozinkom (prikaže se na kraju). Biblioteke u postavkama i dozvolama povezuju se po nazivu. Ponovno vraćanje ne duplicira playliste. Na kraju se po korisniku prikaže koliko je stavki prepoznato, a koje nisu pronađene.
+
+Statistika gledanja (Playback Reporting) nije dio korisničkog backupa, jer ide samo uz cijelu bazu. Za nju koristi puni backup.
 

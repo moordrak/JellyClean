@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>JellyClean</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23aa5cc3'/%3E%3Cstop offset='1' stop-color='%2300a4dc'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='15' fill='url(%23g)'/%3E%3Cpath d='M23 17.5v29a2 2 0 0 0 3 1.7l23.5-14.5a2 2 0 0 0 0-3.4L26 15.8a2 2 0 0 0-3 1.7z' fill='%23fff'/%3E%3Cpath d='M12 12l2.2 5.3L19.5 19.5l-5.3 2.2L12 27l-2.2-5.3L4.5 19.5l5.3-2.2z' fill='%23fff' opacity='.9'/%3E%3Ccircle cx='51' cy='51' r='3.2' fill='%23fff' opacity='.75'/%3E%3C/svg%3E">
+<meta name="theme-color" content="#0b0d12">
 <style>
 :root{
   --bg:#0b0d12;--panel:rgba(23,26,33,.78);--panel-solid:#171a21;--panel2:#1e222b;--line:#2a2f3a;--text:#e6e8ec;--muted:#8b93a3;
@@ -220,6 +222,46 @@ header{gap:12px}
 @media (prefers-reduced-motion:reduce){.gm-live.on i{animation:none}}
 .dg-item:hover{background:rgba(255,255,255,.05)}
 .dg-h{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:14px 0 4px;font-weight:600}
+/* ---- lijevi izbornik ---- */
+:root{--hdr:61px;--side:236px}
+.layout{display:grid;grid-template-columns:var(--side) minmax(0,1fr);align-items:start;position:relative;z-index:1}
+.side{position:sticky;top:var(--hdr);height:calc(100vh - var(--hdr));overflow-y:auto;padding:14px 10px 20px;border-right:1px solid var(--line);
+  background:rgba(13,15,20,.62);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
+.side nav{display:flex;flex-direction:column;gap:2px;flex-wrap:nowrap}
+.side nav button{display:flex;align-items:center;gap:11px;width:100%;text-align:left;padding:8px 12px;border-radius:8px;font-size:14px;color:var(--muted);background:none;border:0;cursor:pointer;font-family:inherit;transition:background .15s,color .15s}
+.side nav button svg{width:18px;height:18px;flex:none;opacity:.85}
+.side nav button:hover{background:rgba(255,255,255,.05);color:var(--text)}
+.side nav button.active{background:linear-gradient(90deg,rgba(0,164,220,.20),rgba(170,92,195,.10));color:var(--text);box-shadow:inset 3px 0 0 var(--accent)}
+.side nav button.active svg{opacity:1;color:var(--accent)}
+.nav-h{font-size:10.5px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted);opacity:.7;padding:14px 12px 4px}
+.layout main{max-width:1500px;width:100%;margin:0;padding:20px 24px}
+@media (max-width:900px){
+  .layout{grid-template-columns:1fr}
+  .side{position:sticky;top:var(--hdr);height:auto;z-index:4;padding:6px 8px;border-right:0;border-bottom:1px solid var(--line);overflow-x:auto;overflow-y:hidden}
+  .side nav{flex-direction:row;gap:4px}
+  .side nav button{width:auto;white-space:nowrap;padding:7px 10px;font-size:13px}
+  .side nav button.active{box-shadow:inset 0 -2px 0 var(--accent)}
+  .nav-h{display:none}
+  .layout main{padding:10px}
+}
+/* ---- backup ---- */
+.bk-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:14px}
+.bk-card h3{display:flex;align-items:center;gap:8px}
+.bk-card .kv{display:grid;grid-template-columns:150px 1fr;gap:4px 10px;font-size:13px;margin:10px 0}
+.bk-card .kv span:nth-child(odd){color:var(--muted)}
+.bk-opt{display:flex;gap:9px;align-items:flex-start;margin:7px 0;font-size:13.5px;cursor:pointer}
+.bk-opt input{margin-top:2px}
+.bk-opt small{display:block;color:var(--muted);font-size:12px}
+.bk-users{max-height:180px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:4px 8px;margin:8px 0;background:rgba(0,0,0,.18)}
+.bk-users label{display:flex;gap:8px;align-items:center;padding:3px 0;font-size:13px}
+.bk-job{border:1px solid var(--accent);background:rgba(0,164,220,.06);border-radius:10px;padding:14px 16px;margin-bottom:16px}
+.bk-job.err{border-color:var(--bad);background:rgba(248,81,73,.06)}
+.bk-job.ok{border-color:var(--ok);background:rgba(63,185,80,.06)}
+.bk-job pre{font-family:var(--mono);font-size:12px;max-height:160px;overflow:auto;margin:10px 0 0;color:var(--muted);white-space:pre-wrap}
+.bk-kind{font-size:11px;padding:1px 7px;border-radius:9px;border:1px solid var(--line)}
+.bk-kind.full{color:#7fd6f5;border-color:#1d5a73}.bk-kind.users{color:#d6a8e6;border-color:#5b3466}
+#bk-table td .sub{display:block}
+a.btn{text-decoration:none;display:inline-block}
 </style>
 </head>
 <body>
@@ -227,23 +269,30 @@ header{gap:12px}
 <header>
   <div class="brand"><h1><span>Jelly</span>Clean</h1><div class="ver" id="ver"></div></div>
   <label class="srvsel" id="srvsel-wrap" title="Jellyfin server za kartice Jellyfin, Provjera putanja, Jellyfin config i Test enkodiranja" style="display:none"><span>Server</span><select id="srvsel"></select></label>
-  <nav id="nav">
-    <button data-tab="overview" class="active">Pregled</button>
-    <button data-tab="browse">Preglednik</button>
-    <button data-tab="files">Najveće datoteke</button>
-    <button data-tab="jellyfin">Jellyfin</button>
-    <button data-tab="paths">Provjera putanja</button>
-    <button data-tab="junk">Smeće i duplikati</button>
-    <button data-tab="jfconfig">Jellyfin config</button>
-    <button data-tab="enctest" title="Test paralelnog enkodiranja">Test enkodiranja</button>
-    <button data-tab="trash">Kanta</button>
-    <button data-tab="servers">Serveri</button>
-    <button data-tab="migrate" title="Migracija Jellyfina iz Dockera u Proxmox LXC">Migracija</button>
-  </nav>
   <div class="spacer"></div>
   <span id="status"></span>
   <button class="btn" id="btnScan" title="Skeniraj ponovno">↻<span class="lbl"> Skeniraj ponovno</span></button>
 </header>
+<div class="layout">
+<aside class="side" id="side">
+  <nav id="nav">
+    <button data-tab="overview" class="active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg><span>Pregled</span></button>
+    <div class="nav-h">Mediji</div>
+    <button data-tab="browse"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>Preglednik</span></button>
+    <button data-tab="files"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h11M4 18h6"/></svg><span>Najveće datoteke</span></button>
+    <button data-tab="junk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg><span>Smeće i duplikati</span></button>
+    <button data-tab="trash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg><span>Kanta</span></button>
+    <div class="nav-h">Jellyfin</div>
+    <button data-tab="jellyfin"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5.5v13a1 1 0 0 0 1.5.9l10-6.5a1 1 0 0 0 0-1.7l-10-6.5A1 1 0 0 0 8 5.5z"/></svg><span>Biblioteke</span></button>
+    <button data-tab="paths"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 18H15a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h6.5"/></svg><span>Provjera putanja</span></button>
+    <button data-tab="jfconfig"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 14H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 3V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 10h0a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Jellyfin config</span></button>
+    <button data-tab="enctest" title="Test paralelnog enkodiranja"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3L5 14h6l-1 7 8-11h-6z"/></svg><span>Test enkodiranja</span></button>
+    <div class="nav-h">Održavanje</div>
+    <button data-tab="backup" title="Sigurnosne kopije Jellyfina"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v5c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg><span>Backup i restore</span></button>
+    <button data-tab="migrate" title="Migracija Jellyfina iz Dockera u Proxmox LXC"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="7" height="14" rx="1.5"/><rect x="14" y="5" width="7" height="14" rx="1.5"/><path d="M8 12h8M13.5 9.5L16 12l-2.5 2.5"/></svg><span>Migracija</span></button>
+    <button data-tab="servers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg><span>Serveri</span></button>
+  </nav>
+</aside>
 <main>
 
 <!-- PREGLED -->
@@ -439,6 +488,29 @@ header{gap:12px}
   <div id="sv-list" class="sv-grid"></div>
 </section>
 
+<!-- BACKUP -->
+<section class="tab" id="tab-backup">
+  <div class="tab-head"><h2>Backup i restore</h2><p>Sigurnosne kopije Jellyfina - vraćanje na isti ili potpuno drugi server</p></div>
+  <div id="bk-job"></div>
+  <div class="section"><h2>Nova sigurnosna kopija <span class="sub" id="bk-srv" style="text-transform:none;letter-spacing:0"></span></h2>
+    <div class="bk-grid">
+      <div class="card bk-card" id="bk-full"><div class="sub">Učitavam…</div></div>
+      <div class="card bk-card" id="bk-users"><div class="sub">Učitavam…</div></div>
+    </div>
+  </div>
+  <div class="section" style="margin-top:22px"><h2>Spremljene kopije</h2>
+    <div class="toolbar">
+      <label class="btn" style="cursor:pointer">Učitaj kopiju (.tar)…<input type="file" id="bk-upload" accept=".tar,application/x-tar" style="display:none"></label>
+      <span class="sub" id="bk-disk"></span>
+    </div>
+    <div id="bk-list"></div>
+  </div>
+  <div class="section" style="margin-top:22px"><h2>Podaci prije vraćanja</h2>
+    <p class="sub" style="margin:0 0 8px">Prije vraćanja punog backupa trenutni podaci premještaju se u <code>.jellyclean-restore-…/prev</code> u Jellyfinovoj mapi. Kad se uvjeriš da je sve u redu, možeš ih obrisati.</p>
+    <div class="toolbar"><button class="btn" id="bk-prevs">Prikaži za ovaj server</button><button class="btn danger" id="bk-prevs-clean" disabled>Obriši sve</button><span class="sub" id="bk-prevs-sum"></span></div>
+  </div>
+</section>
+
 <!-- MIGRACIJA -->
 <section class="tab" id="tab-migrate">
   <div class="tab-head"><h2>Migracija Jellyfina</h2><p>Iz Docker kontejnera u novi Proxmox LXC sa samostalnim Jellyfinom, NVENC/QSV transkodiranjem i NFS medijima</p></div>
@@ -474,6 +546,7 @@ header{gap:12px}
   <button class="btn danger" id="sel-del">Obriši odabrano</button>
 </div>
 </main>
+</div>
 
 <dialog id="extdlg" class="wide">
   <div class="head"><h3 id="ext-title"></h3><span class="sub" id="ext-sum"></span><button class="btn xclose" id="ext-close">Zatvori ✕</button></div>
@@ -521,6 +594,11 @@ header{gap:12px}
     <div id="svf-res"></div>
     <div class="row"><button class="btn" type="button" id="svf-cancel">Odustani</button><button class="btn primary" type="button" id="svf-save">Spremi i provjeri vezu</button></div>
   </form>
+</dialog>
+
+<dialog id="bkdlg">
+  <div class="head" style="display:flex;align-items:center;gap:12px"><h3 style="margin:0" id="bkd-title">Vrati sigurnosnu kopiju</h3><button class="btn" id="bkd-close" style="margin-left:auto">Zatvori ✕</button></div>
+  <div id="bkd-body"></div>
 </dialog>
 
 <dialog id="pvedlg" class="wide">
@@ -621,9 +699,11 @@ $$('#nav button').forEach(b=>b.onclick=()=>{
   $$('#nav button').forEach(x=>x.classList.toggle('active',x===b));
   $$('.tab').forEach(t=>t.classList.toggle('active', t.id==='tab-'+b.dataset.tab));
   current=b.dataset.tab; clearSel(); refreshCurrent();
+  try{ history.replaceState(null,'', current==='overview' ? location.pathname : '#'+current); }catch(e){}
+  try{ b.scrollIntoView({block:'nearest',inline:'nearest'}); }catch(e){}
 });
 function refreshCurrent(){
-  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash, jfconfig:()=>loadJc(false), paths:loadPc, enctest:()=>{ loadEt(); loadNvp(); gmStart(); }, servers:loadSv, migrate:()=>loadPve(true)}[current]||(()=>{}))();
+  ({overview:renderOverview, browse:()=>loadDir(browsePath), files:loadFiles, jellyfin:loadJf, junk:loadJunk, trash:loadTrash, jfconfig:()=>loadJc(false), paths:loadPc, enctest:()=>{ loadEt(); loadNvp(); gmStart(); }, servers:loadSv, backup:loadBk, migrate:()=>loadPve(true)}[current]||(()=>{}))();
 }
 
 // ---------------- pregled ----------------
@@ -1264,6 +1344,213 @@ $('#svboot').addEventListener('click',e=>{ const c=e.target.closest('[data-copy]
   const t=$('#'+c.dataset.copy).textContent;
   (navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(()=>toast('Kopirano'),()=>{ const r=document.createRange(); r.selectNodeContents($('#'+c.dataset.copy)); const s=getSelection(); s.removeAllRanges(); s.addRange(r); toast('Označeno - kopiraj s Ctrl+C'); });
 });
+// ---------------- backup i restore ----------------
+const BKS={data:null, info:null, timer:null, users:[]};
+const fsz=n=>n==null||n<0?'–':fmt(n);
+const fdt=ts=>{ const d=new Date(ts); return isNaN(d)?'–':d.toLocaleString('hr-HR',{day:'numeric',month:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'}); };
+async function loadBk(){
+  try{ BKS.data=await api('/api/backup'); }catch(e){ $('#bk-list').innerHTML=`<div class="note warn">${esc(e.message)}</div>`; return; }
+  renderBkList(); renderBkJob();
+  const cur=(BKS.data.servers||[]).find(x=>x.id===BKS.data.current);
+  $('#bk-srv').textContent = cur ? '· server '+cur.name : '';
+  bkInfo();
+  if(BKS.data.job && BKS.data.job.running) bkPoll();
+}
+async function bkInfo(){
+  $('#bk-full').innerHTML='<div class="sub">Provjeravam Jellyfin računalo…</div>';
+  let r; try{ r=await api('/api/backup/info'); }catch(e){ $('#bk-full').innerHTML=`<div class="note warn">${esc(e.message)}</div>`; return; }
+  BKS.info=r; renderBkFull(); renderBkUsers();
+}
+function renderBkFull(){
+  const r=BKS.info, f=r.full||{}, sz=f.sizes||{};
+  let h=`<h3>Puni backup <span class="pill">isti ili drugi server</span></h3>
+    <p class="sub" style="margin:0">Cijela Jellyfin baza, postavke, korisnici i lozinke, pluginovi, <b>statistika gledanja</b> (Playback Reporting) i povijest. Vraća se na isti server ili na novi, a putanje u postavkama prilagode se odredištu.</p>`;
+  if(!r.ssh) return $('#bk-full').innerHTML=h+`<div class="note warn" style="margin-top:10px">Treba SSH pristup Jellyfin računalu - kartica <b>Serveri</b> → Postavi pristup.</div>`;
+  if(r.full_error) return $('#bk-full').innerHTML=h+`<div class="note warn" style="margin-top:10px">${esc(r.full_error)}</div>`;
+  const est=(sz.config||0)+(sz.data||0);
+  h+=`<div class="kv">
+    <span>Baza</span><span>${fsz(f.db)}</span>
+    <span>Postavke + podaci</span><span>${fsz(est)}</span>
+    <span>Statistika gledanja</span><span>${f.stats?`<span class="pill ok">da</span> ${fsz(f.stats.size)}`:'<span class="pill">plugin nije instaliran</span>'}</span>
+    <span>Metapodaci i slike</span><span>${fsz(sz.metadata)}</span>
+    <span>Jellyfin</span><span>${esc(f.ctl_name||'?')} <span class="sub">(${esc((f.ctl||'nepoznato').split(':')[0])})</span></span>
+    <span>Mjesto u JellyCleanu</span><span>${fsz(r.local_disk&&r.local_disk.free)} slobodno</span>
+  </div>
+  <label class="bk-opt"><input type="checkbox" id="bk-stop" checked ${f.ctl?'':'disabled'}><span>Zaustavi Jellyfin tijekom kopiranja<small>Preporučeno - baza se kopira u dosljednom stanju. Jellyfin je nedostupan dok traje pakiranje.</small></span></label>
+  <label class="bk-opt"><input type="checkbox" id="bk-meta"><span>Uključi metapodatke i slike (+${fsz(sz.metadata)})<small>Bez njih Jellyfin nakon vraćanja ponovno preuzme postere i opise s interneta.</small></span></label>
+  ${f.tar===false?'<div class="note warn">Na Jellyfin računalu nema tar/gzip.</div>':''}
+  <div class="toolbar" style="margin:12px 0 0"><button class="btn primary" id="bk-go-full">Napravi puni backup</button><span class="sub" id="bk-est"></span></div>`;
+  $('#bk-full').innerHTML=h;
+  const upd=()=>{ $('#bk-est').textContent='procjena: do '+fsz(est+($('#bk-meta').checked?(sz.metadata||0):0))+' (komprimirano obično manje)'; };
+  $('#bk-meta').onchange=upd; upd();
+  $('#bk-go-full').onclick=async()=>{
+    const stop=$('#bk-stop').checked, meta=$('#bk-meta').checked;
+    if(stop && !confirm('Jellyfin će biti zaustavljen dok traje pakiranje (reprodukcija se prekida). Nastaviti?')) return;
+    try{ await api('/api/backup/full',{stop, metadata:meta}); }catch(e){ return toast(e.message,true); }
+    bkPoll();
+  };
+}
+function renderBkUsers(){
+  const r=BKS.info;
+  let h=`<h3>Korisnički backup <span class="pill">bilo koji Jellyfin</span></h3>
+    <p class="sub" style="margin:0">Za svakog korisnika: odgledano, broj gledanja, gdje je stao, favoriti, ocjene, playliste i osobne postavke. Na drugom serveru filmovi i epizode prepoznaju se po putanji, IMDb/TMDb/TVDb oznakama, sezoni i epizodi ili nazivu i godini.</p>`;
+  if(!r.api) return $('#bk-users').innerHTML=h+`<div class="note warn" style="margin-top:10px">Treba Jellyfin URL i API ključ - kartica <b>Serveri</b>.</div>`;
+  if(r.users_error) return $('#bk-users').innerHTML=h+`<div class="note warn" style="margin-top:10px">${esc(r.users_error)}</div>`;
+  const us=r.users||[];
+  h+=`<div class="toolbar" style="margin:10px 0 0"><label class="sub"><input type="checkbox" id="bku-all" checked> svi korisnici (${us.length})</label></div>
+    <div class="bk-users">${us.map(u=>`<label><input type="checkbox" class="bku" value="${esc(u.id)}" checked>${esc(u.name)}${u.admin?' <span class="pill">admin</span>':''}</label>`).join('')}</div>
+    <div class="toolbar" style="margin:12px 0 0"><button class="btn primary" id="bk-go-users">Napravi korisnički backup</button></div>`;
+  $('#bk-users').innerHTML=h;
+  $('#bku-all').onchange=e=>$$('.bku').forEach(c=>c.checked=e.target.checked);
+  $('#bk-go-users').onclick=async()=>{
+    const sel=$$('.bku').filter(c=>c.checked).map(c=>c.value);
+    if(!sel.length) return toast('Odaberi barem jednog korisnika',true);
+    try{ await api('/api/backup/users',{users: sel.length===$$('.bku').length?[]:sel}); }catch(e){ return toast(e.message,true); }
+    bkPoll();
+  };
+}
+function bkContents(b){
+  const c=b.contents||{};
+  if(b.kind==='full') return ['baza, postavke, pluginovi', c.stats?'statistika gledanja':'', c.metadata?'metapodaci':''].filter(Boolean).join(' · ');
+  return `${c.users||0} korisnika · ${c.played||0} odgledano · ${c.resume||0} započeto · ${c.favorites||0} favorita · ${c.playlists||0} playlista`;
+}
+function renderBkList(){
+  const d=BKS.data, L=d.backups||[];
+  $('#bk-disk').textContent = d.disk ? `${fsz(d.disk.free)} slobodno u ${d.disk.dir}` : '';
+  if(!L.length){ $('#bk-list').innerHTML='<div class="empty">Još nema sigurnosnih kopija.</div>'; return; }
+  $('#bk-list').innerHTML=`<table id="bk-table"><thead><tr><th>Napravljeno</th><th>Vrsta</th><th>Izvor</th><th>Sadržaj</th><th class="num">Veličina</th><th></th></tr></thead><tbody>${
+    L.map(b=>`<tr><td>${fdt(b.created)}${b.uploaded?'<span class="sub">učitano '+fdt(b.uploaded)+'</span>':''}</td>
+      <td><span class="bk-kind ${b.kind}">${b.kind==='full'?'puni':'korisnički'}</span></td>
+      <td>${esc((b.server||{}).name||'?')}<span class="sub">${esc(((b.jellyfin||{}).server_name||'')+((b.jellyfin||{}).version?' · Jellyfin '+(b.jellyfin||{}).version:''))}</span></td>
+      <td class="sub" style="white-space:normal">${esc(bkContents(b))}</td>
+      <td class="num">${fsz(b.size)}</td>
+      <td style="white-space:nowrap;text-align:right"><button class="btn primary" data-bk="restore" data-id="${esc(b.id)}">Vrati…</button>
+        <a class="btn" href="/api/backup/download?id=${encodeURIComponent(b.id)}" download>Preuzmi</a>
+        <button class="btn danger" data-bk="del" data-id="${esc(b.id)}">Obriši</button></td></tr>`).join('')}</tbody></table>`;
+}
+$('#bk-list').addEventListener('click', async e=>{
+  const b=e.target.closest('[data-bk]'); if(!b) return;
+  const id=b.dataset.id;
+  if(b.dataset.bk==='del'){
+    if(!confirm('Trajno obrisati ovu sigurnosnu kopiju?')) return;
+    try{ await api('/api/backup/delete',{id}); toast('Obrisano'); }catch(err){ toast(err.message,true); }
+    return loadBk();
+  }
+  bkRestoreDlg(id);
+});
+function bkRestoreDlg(id){
+  const b=(BKS.data.backups||[]).find(x=>x.id===id); if(!b) return;
+  const srvs=BKS.data.servers||[], srcId=(b.server||{}).id;
+  const def=srvs.find(s=>s.id===BKS.data.current)||srvs[0]||{};
+  $('#bkd-title').textContent = b.kind==='full' ? 'Vrati puni backup' : 'Vrati korisnički backup';
+  let h=`<p class="sub" style="margin-top:0">Kopija od ${fdate(b.created)} sa servera <b>${esc((b.server||{}).name||'?')}</b>${(b.jellyfin||{}).version?' (Jellyfin '+esc(b.jellyfin.version)+')':''}: ${esc(bkContents(b))}</p>
+    <div class="toolbar"><label>Vrati na <select id="bkd-target">${srvs.map(s=>`<option value="${esc(s.id)}"${s.id===def.id?' selected':''}>${esc(s.name)}${s.id===srcId?' (isti server)':''}</option>`).join('')}</select></label>
+      <span class="sub">Drugi Jellyfin dodaj na kartici <b>Serveri</b>.</span></div><div id="bkd-opts"></div>
+    <div class="row"><button class="btn" id="bkd-cancel">Odustani</button><button class="btn primary" id="bkd-go">Vrati</button></div>`;
+  $('#bkd-body').innerHTML=h;
+  const opts=()=>{
+    const same=$('#bkd-target').value===srcId;
+    if(b.kind==='full'){
+      $('#bkd-opts').innerHTML=`
+        <div class="note warn">Jellyfin na odredištu bit će <b>zaustavljen</b>. Njegova trenutna baza i postavke premještaju se u <code>.jellyclean-restore-…/prev</code> (možeš ih vratiti ručno), a zatim se raspakira kopija. Odredišni Jellyfin mora biti iste ili novije verzije.</div>
+        <label class="bk-opt"><input type="checkbox" id="bkd-remap" ${same?'':'checked'}><span>Prilagodi putanje postavki odredištu<small>Npr. Docker <code>/config</code> → <code>/var/lib/jellyfin</code>. Za drugi server uvijek uključeno.</small></span></label>
+        <label class="bk-opt"><input type="checkbox" id="bkd-newid" ${same?'':'checked'}><span>Novi Server ID<small>Ako stari server i dalje radi - inače ga aplikacije (Xbox, mobitel, Seerr) miješaju s novim.</small></span></label>
+        ${same?'':'<p class="sub">Ako su mediji na drugom serveru na drugim putanjama, nakon vraćanja otvori <b>Provjera putanja</b>.</p>'}`;
+    }else{
+      const names=b.user_names||[];
+      $('#bkd-opts').innerHTML=`
+        <div class="bk-users">${names.map(n=>`<label><input type="checkbox" class="bkd-u" value="${esc(n)}" checked>${esc(n)}</label>`).join('')}</div>
+        <label class="bk-opt"><input type="checkbox" id="bkd-create" checked><span>Stvori korisnike koji ne postoje<small>Dobit će nasumičnu lozinku (prikazat će se na kraju).</small></span></label>
+        <label class="bk-opt"><input type="checkbox" id="bkd-pl" checked><span>Playliste</span></label>
+        <label class="bk-opt"><input type="checkbox" id="bkd-set" checked><span>Osobne postavke (jezik zvuka i titlova, prikaz početne stranice…)</span></label>
+        <label class="bk-opt"><input type="checkbox" id="bkd-pol"><span>Dozvole i pristup bibliotekama<small>Biblioteke se povezuju po nazivu.</small></span></label>
+        ${same?'':`<details style="margin-top:8px"><summary class="sub" style="cursor:pointer">Mediji su na drugim putanjama? (neobavezno)</summary>
+          <p class="sub">Jedna zamjena po retku, npr. <code>/nas/Gondolin => /mnt/media</code>. Inače se stavke prepoznaju po IMDb/TMDb/TVDb oznakama i nazivu.</p>
+          <textarea id="bkd-map" rows="3" style="width:100%;font-family:var(--mono);background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:8px"></textarea></details>`}`;
+    }
+  };
+  $('#bkd-target').onchange=opts; opts();
+  $('#bkd-cancel').onclick=()=>$('#bkdlg').close();
+  $('#bkd-go').onclick=async()=>{
+    const target=$('#bkd-target').value, tname=$('#bkd-target').selectedOptions[0].textContent;
+    let o={};
+    if(b.kind==='full'){
+      o={remap:$('#bkd-remap').checked, new_server_id:$('#bkd-newid').checked};
+      if(!confirm(`Vratiti puni backup na ${tname}?\n\nTrenutna baza i postavke tog Jellyfina bit će zamijenjene (stare ostaju u .jellyclean-restore-…/prev).`)) return;
+    }else{
+      const map=(($('#bkd-map')||{}).value||'').split('\n').map(l=>l.split('=>').map(x=>x.trim())).filter(p=>p.length===2&&p[0]&&p[1]);
+      o={users:$$('.bkd-u').filter(c=>c.checked).map(c=>c.value), create_users:$('#bkd-create').checked, playlists:$('#bkd-pl').checked,
+         settings:$('#bkd-set').checked, policy:$('#bkd-pol').checked, path_map:map};
+      if(!o.users.length) return toast('Odaberi barem jednog korisnika',true);
+    }
+    try{ await api('/api/backup/restore',{id, target, options:o}); }catch(e){ return toast(e.message,true); }
+    $('#bkdlg').close(); bkPoll();
+  };
+  $('#bkdlg').showModal();
+}
+$('#bkd-close').onclick=()=>$('#bkdlg').close();
+function renderBkJob(){
+  const j=(BKS.data||{}).job, box=$('#bk-job');
+  if(!j){ box.innerHTML=''; return; }
+  const p=j.progress, isBytes=j.kind!=='users' && p && p.total>100000;
+  let pct=null, ptxt='';
+  if(p && p.total){ pct=Math.min(100,Math.round(p.done/p.total*100)); ptxt=isBytes?`${fsz(p.done)} / ${fsz(p.total)}`:`${p.done} / ${p.total}`; }
+  else if(j.bytes){ ptxt=fsz(j.bytes)+' zapisano'; }
+  const cls=j.running?'':(j.error?' err':' ok');
+  let h=`<div class="bk-job${cls}"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <b>${esc(j.title)}</b><span class="pill ${j.running?'warn':(j.error?'bad':'ok')}">${j.running?'radi…':(j.error?'greška':'gotovo')}</span>
+    <span class="sub">${esc(j.phase||'')}</span><span class="spacer" style="flex:1"></span>
+    ${j.running?'<button class="btn danger" id="bk-cancel">Prekini</button>':'<button class="btn" id="bk-dismiss">Zatvori</button>'}</div>
+    ${pct!==null||ptxt?`<div class="bar"><i style="width:${pct===null?100:pct}%;${pct===null?'opacity:.35':''}"></i></div><div class="sub">${esc(ptxt)}${pct!==null?' · '+pct+'%':''}</div>`:''}
+    ${j.error?`<div class="note warn" style="margin:10px 0 0">${esc(j.error)}</div>`:''}`;
+  const r=j.result;
+  if(r && !j.running){
+    if(r.users){  // vraćanje korisnika
+      h+=`<table style="margin-top:10px"><thead><tr><th>Korisnik</th><th class="num">Prepoznato</th><th class="num">Upisano</th><th class="num">Nije pronađeno</th><th class="num">Playliste</th><th></th></tr></thead><tbody>${
+        r.users.map(u=>u.skipped?`<tr><td>${esc(u.name)}</td><td colspan="5" class="sub">${esc(u.skipped)}</td></tr>`:
+          `<tr><td>${esc(u.name)}</td><td class="num">${u.matched}</td><td class="num">${u.applied}${u.errors?` <span class="pill bad">${u.errors} greš.</span>`:''}</td><td class="num">${u.unmatched_count}</td><td class="num">${u.playlists}</td>
+           <td>${u.unmatched_count?`<details><summary class="sub" style="cursor:pointer">popis</summary><div class="sub" style="max-height:200px;overflow:auto">${u.unmatched.map(x=>esc(x.series?`${x.series} S${x.season??'?'}E${x.episode??'?'}`:`${x.name||'?'}${x.year?' ('+x.year+')':''}`)).join('<br>')}</div></details>`:''}</td></tr>`).join('')}</tbody></table>`;
+      if(r.created_users && r.created_users.length) h+=`<div class="note" style="margin-top:10px"><b>Stvoreni korisnici</b> (zapiši lozinke, kasnije se mogu promijeniti u Jellyfinu):<br>${r.created_users.map(u=>`${esc(u.name)}: <code>${esc(u.password)}</code>`).join('<br>')}</div>`;
+    }else if(r.prev!==undefined || r.pairs){  // puni restore
+      h+=`<div class="note" style="margin-top:10px">Vraćeno.${r.started?' Jellyfin je ponovno pokrenut.':''}${r.pairs&&r.pairs.length?'<br>Prilagođene putanje: '+r.pairs.map(p=>`<code>${esc(p[0])}</code> → <code>${esc(p[1])}</code>`).join(', '):''}${r.new_server_id?'<br>Novi Server ID.':''}
+        ${r.prev?`<br>Prethodni podaci: <code>${esc(r.prev)}</code>`:''}${r.warning?`<br><b>${esc(r.warning)}</b>`:''}${r.same_server?'':'<br>Ako mediji nisu na istim putanjama, otvori <b>Provjera putanja</b>.'}</div>`;
+    }else if(r.backup){
+      h+=`<div class="sub" style="margin-top:8px">Spremljeno kao ${esc(r.backup)}${r.size?' · '+fsz(r.size):''}${r.stats===false?' · statistika gledanja nije pronađena (plugin Playback Reporting)':''}</div>`;
+    }
+  }
+  if(j.log && j.log.length) h+=`<details${j.running?'':' open'}><summary class="sub" style="cursor:pointer;margin-top:8px">dnevnik</summary><pre>${esc(j.log.slice(-40).join('\n'))}</pre></details>`;
+  box.innerHTML=h+'</div>';
+  const c=$('#bk-cancel'); if(c) c.onclick=async()=>{ if(confirm('Prekinuti?')){ try{ await api('/api/backup/cancel',{}); }catch(e){} } };
+  const d=$('#bk-dismiss'); if(d) d.onclick=()=>{ box.innerHTML=''; BKS.data.job=null; };
+}
+async function bkPoll(){
+  clearTimeout(BKS.timer);
+  try{ const d=await api('/api/backup'); const was=BKS.data&&BKS.data.job&&BKS.data.job.running; BKS.data=d; renderBkJob(); if(!d.job||!d.job.running){ renderBkList(); if(was) bkInfo(); } }
+  catch(e){}
+  if(BKS.data && BKS.data.job && BKS.data.job.running && current==='backup') BKS.timer=setTimeout(bkPoll,1500);
+}
+$('#bk-upload').onchange=async e=>{
+  const f=e.target.files[0]; if(!f) return;
+  toast(`Učitavam ${f.name} (${fsz(f.size)})…`);
+  try{
+    const r=await fetch('/api/backup/upload',{method:'POST',headers:{'X-Requested-With':'JellyClean','Content-Type':'application/x-tar'},body:f});
+    const j=await r.json(); if(!r.ok) throw new Error(j.error||r.statusText);
+    toast('Kopija učitana'); loadBk();
+  }catch(err){ toast(err.message,true); }
+  e.target.value='';
+};
+$('#bk-prevs').onclick=async()=>{
+  $('#bk-prevs-sum').textContent='Provjeravam…';
+  try{ const r=await api('/api/backup/prevs'); const n=r.prevs.length, t=r.prevs.reduce((a,p)=>a+p.size,0);
+    $('#bk-prevs-sum').textContent = n ? `${n} kopija, ukupno ${fsz(t)}: `+r.prevs.map(p=>p.name).join(', ') : 'Nema starih podataka.';
+    $('#bk-prevs-clean').disabled=!n; }
+  catch(e){ $('#bk-prevs-sum').textContent=e.message; }
+};
+$('#bk-prevs-clean').onclick=async()=>{
+  if(!confirm('Trajno obrisati podatke spremljene prije vraćanja backupa na ovom serveru?')) return;
+  try{ const r=await api('/api/backup/prevs/clean',{}); toast(`Obrisano: ${r.deleted}`); $('#bk-prevs').click(); }catch(e){ toast(e.message,true); }
+};
+
 // ---------------- migracija: Proxmox pristup ----------------
 let PVE=null;
 const MG={offset:0, timer:null, qid:null, state:null};
@@ -1655,7 +1942,8 @@ function renderEt(){
 }
 
 // ---------------- start ----------------
-loadServers().then(()=>{ let t=null; try{ t=sessionStorage.getItem('jc-tab'); sessionStorage.removeItem('jc-tab'); }catch(e){} if(t && t!=='overview') goTab(t); });
+const setHdr=()=>{ const h=document.querySelector('header'); if(h) document.documentElement.style.setProperty('--hdr', h.offsetHeight+'px'); }; setHdr(); addEventListener('resize', setHdr);
+loadServers().then(()=>{ let t=null; try{ t=sessionStorage.getItem('jc-tab'); sessionStorage.removeItem('jc-tab'); }catch(e){} t=t||location.hash.slice(1); if(t && t!=='overview' && $(`#nav button[data-tab="${t}"]`)) goTab(t); });
 pollScan();
 setInterval(()=>{ if(!OV || (!OV.scan.running && !OV.jellyfin.running)) loadOverview(); }, 60000);
 </script>

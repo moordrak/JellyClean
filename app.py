@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -1036,7 +1036,7 @@ import subprocess
 HEX32 = re.compile(r"^[0-9a-f]{32}$")
 
 
-HELPER_VERSION = 10
+HELPER_VERSION = 11
 
 # NVENC patch: keylase/nvidia-patch, zakucana provjerena verzija. Skripta se ne sprema u ovaj
 # repozitorij (nema licence za redistribuciju) - preuzima se s GitHuba i provjerava sha256 ovdje
@@ -1456,6 +1456,134 @@ op_gpumon() {
   echo "END"
 }
 
+# ---- sigurnosna kopija i vraćanje (puni backup: baza, postavke, pluginovi, statistika gledanja) ----
+# Arhiva: config/ = mapa sa system.xml, data/ = Jellyfin podatkovna mapa (data/jellyfin.db,
+# playback_reporting.db, plugins, root ...). Cache, logovi i transkodiranje se ne spremaju.
+jf_confdir() {
+  JCONF=""
+  for d in "$C" "$C/config" "$DATA/config" /etc/jellyfin; do
+    if [ -f "$d/system.xml" ]; then JCONF=$d; return 0; fi
+  done
+  return 0
+}
+jf_under() { case "$2" in "$1"/*) printf '%s' "${2#"$1"/}" ;; *) printf '' ;; esac; }
+op_bkinfo() {
+  jf_find_ctl; jf_confdir; jf_db
+  echo "CTL ${JCTL:-none} ${JNAME:--}"
+  echo "CONF ${JCONF:--}"
+  echo "DATAP $DATA"
+  echo "DBSZ $(sz "$DB")"
+  r=$(jf_under "$JCONF" "$DATA")
+  if [ -n "$JCONF" ]; then
+    if [ -n "$r" ]; then echo "SZ config $(du -sb --exclude="$(basename "$r")" --exclude=log --exclude=cache "$JCONF" 2>/dev/null | tail -1 | cut -f1)"
+    else echo "SZ config $(du -sb --exclude=log --exclude=cache "$JCONF" 2>/dev/null | tail -1 | cut -f1)"; fi
+  fi
+  echo "SZ data $(du -sb --exclude=metadata --exclude=cache --exclude=transcodes --exclude=log --exclude=config "$DATA" 2>/dev/null | tail -1 | cut -f1)"
+  echo "SZ metadata $(sz "$META")"
+  for f in "$DATA/data/playback_reporting.db" "$DATA/playback_reporting.db"; do
+    if [ -f "$f" ]; then echo "STATS $(sz "$f") $f"; break; fi
+  done
+  df -B1 -P "$DATA" 2>/dev/null | tail -1 | awk '{print "DF", $2, $3, $4}'
+  echo "OWNER $(stat -c %u:%g "$DATA" 2>/dev/null)"
+  if command -v tar >/dev/null 2>&1 && command -v gzip >/dev/null 2>&1; then echo "TAR 1"; else echo "TAR 0"; fi
+  n=0; for d in "$DATA"/.jellyclean-restore-*; do [ -d "$d" ] && n=$((n + 1)); done; echo "PREVS $n"
+}
+op_backup() {
+  stop=${1:-1}; meta=${2:-0}
+  jf_find_ctl; jf_confdir; jf_db
+  [ -n "$JCONF" ] || { echo "ERR ne nalazim Jellyfin postavke (system.xml) u $C ni /etc/jellyfin" >&2; exit 3; }
+  [ -f "$DB" ] || { echo "ERR ne nalazim Jellyfin bazu ($DATA/data/jellyfin.db)" >&2; exit 3; }
+  command -v tar >/dev/null 2>&1 && command -v gzip >/dev/null 2>&1 || { echo "ERR na Jellyfin računalu nema tar/gzip" >&2; exit 3; }
+  S=$(mktemp -d) || { echo "ERR mktemp" >&2; exit 3; }
+  ln -s "$DATA" "$S/data"; parts=data
+  if [ "$JCONF" != "$DATA" ]; then ln -s "$JCONF" "$S/config"; parts="config data"; fi
+  set -- --exclude=config/log --exclude=config/cache --exclude=config/transcodes \
+         --exclude=data/log --exclude=data/cache --exclude=data/transcodes \
+         --exclude='*.jellyclean-*.bak' --exclude='.jellyclean-restore-*'
+  r=$(jf_under "$JCONF" "$DATA"); [ -n "$r" ] && set -- "$@" "--exclude=config/$r"
+  r=$(jf_under "$DATA" "$JCONF"); [ -n "$r" ] && set -- "$@" "--exclude=data/$r"
+  for x in "$CACHE" "$LOG"; do
+    r=$(jf_under "$JCONF" "$x"); [ -n "$r" ] && set -- "$@" "--exclude=config/$r"
+    r=$(jf_under "$DATA" "$x"); [ -n "$r" ] && set -- "$@" "--exclude=data/$r"
+  done
+  if [ "$meta" != 1 ]; then
+    set -- "$@" --exclude=data/metadata
+    r=$(jf_under "$DATA" "$META"); [ -n "$r" ] && set -- "$@" "--exclude=data/$r"
+  fi
+  stopped=0
+  if [ "$stop" = 1 ] && [ -n "$JCTL" ]; then
+    if jf_ctl stop; then stopped=1; echo "INFO STOPPED $JNAME" >&2; sleep 3; else echo "WARN Jellyfin ($JNAME) se nije zaustavio - kopija se radi dok radi" >&2; fi
+  fi
+  echo "INFO TAR $JCONF $DATA" >&2
+  # shellcheck disable=SC2086
+  tar -C "$S" -czhf - "$@" $parts 2>"$S.err"; rc=$?
+  if [ $stopped = 1 ]; then
+    if jf_ctl start; then echo "INFO STARTED $JNAME" >&2; else echo "WARN Jellyfin ($JNAME) se nije ponovno pokrenuo - pokreni ga ručno" >&2; fi
+  fi
+  grep -v -e 'socket ignored' -e 'file changed as we read it' -e 'Removing leading' "$S.err" | head -5 | sed 's/^/WARN tar: /' >&2
+  rm -rf "$S" "$S.err"
+  [ $rc -le 1 ] || { echo "ERR tar je završio s kodom $rc" >&2; exit 4; }
+  echo "INFO DONE" >&2
+}
+op_restore() {
+  pairs=${1:-}; newid=${2:-0}
+  jf_find_ctl; jf_confdir; jf_db
+  [ -n "$JCTL" ] || { echo "ERR ne znam kako zaustaviti Jellyfin (nije pronađen Docker kontejner ni systemd servis)"; cat >/dev/null; return; }
+  [ -n "$JCONF" ] || { echo "ERR ne nalazim Jellyfin postavke (system.xml) - pokreni Jellyfin barem jednom"; cat >/dev/null; return; }
+  W="$DATA/.jellyclean-restore-$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$W/new" || { echo "ERR ne mogu napraviti $W"; cat >/dev/null; return; }
+  cat > "$W/in.tgz" || { echo "ERR prijenos arhive nije uspio (ima li mjesta na disku?)"; rm -rf "$W"; return; }
+  echo "RECV $(sz "$W/in.tgz")"
+  if ! tar -tzf "$W/in.tgz" > "$W/list" 2>/dev/null; then echo "ERR arhiva je oštećena"; rm -rf "$W"; return; fi
+  if grep -Ev '^(\./)?(config|data)(/|$)' "$W/list" | grep -q .; then echo "ERR arhiva ima neočekivan sadržaj"; rm -rf "$W"; return; fi
+  if grep -q -e '\.\./' -e '^/' "$W/list"; then echo "ERR arhiva ima nedopuštene putanje"; rm -rf "$W"; return; fi
+  grep -Eq '^(\./)?data/(data/)?(jellyfin|library)\.db$' "$W/list" || { echo "ERR u arhivi nema Jellyfin baze"; rm -rf "$W"; return; }
+  if ! tar -xzf "$W/in.tgz" -C "$W/new" 2>"$W/err"; then echo "ERR raspakiravanje nije uspjelo: $(head -c 300 "$W/err")"; rm -rf "$W"; return; fi
+  rm -f "$W/in.tgz" "$W/list" "$W/err"
+  jf_ctl stop || { echo "ERR zaustavljanje Jellyfina ($JNAME) nije uspjelo"; rm -rf "$W"; return; }
+  echo "STOPPED $JNAME"
+  sleep 3
+  mkdir -p "$W/prev/config" "$W/prev/data"
+  for pair in "config|$JCONF" "data|$DATA"; do
+    k=${pair%%|*}; dst=${pair#*|}
+    own=$(stat -c %u:%g "$dst")
+    for e in "$W/new/$k"/* "$W/new/$k"/.[!.]*; do
+      [ -e "$e" ] || continue
+      b=$(basename "$e")
+      case "$b" in .jellyclean-restore-*) continue ;; esac
+      [ -e "$dst/$b" ] && mv "$dst/$b" "$W/prev/$k/$b"
+      mv "$e" "$dst/$b" && chown -R "$own" "$dst/$b"
+    done
+  done
+  n=0
+  if [ -n "$pairs" ]; then
+    printf '%s' "$pairs" | base64 -d 2>/dev/null > "$W/pairs"
+    for f in "$JCONF"/*.xml "$DATA"/plugins/configurations/*.xml; do
+      [ -f "$f" ] || continue
+      while IFS='|' read -r from to; do
+        case "$from$to" in *'#'*|'') continue ;; esac
+        case "$from" in /*) ;; *) continue ;; esac
+        sed -i "s#${from}\([/<\"]\)#${to}\1#g; s#${from}\$#${to}#" "$f"
+      done < "$W/pairs"
+      n=$((n + 1))
+    done
+    echo "REMAP $n"
+  fi
+  if [ "$newid" = 1 ]; then rm -f "$DATA/data/device.txt" "$DATA/device.txt"; echo "NEWID"; fi
+  rm -rf "$W/new" "$W/pairs"
+  echo "PREV $W/prev"
+  if jf_ctl start; then echo "STARTED $JNAME"; else echo "WARN Jellyfin ($JNAME) se nije ponovno pokrenuo - pokreni ga ručno"; fi
+  echo "DONE"
+}
+op_restorelist() { for d in "$DATA"/.jellyclean-restore-*; do [ -d "$d" ] && echo "PREVDIR $(sz "$d") $(basename "$d")"; done; echo "END"; }
+op_restoreclean() {
+  n=0
+  for d in "$DATA"/.jellyclean-restore-*; do
+    case "$d" in "$DATA"/.jellyclean-restore-2*) [ -d "$d" ] && rm -rf -- "$d" && n=$((n + 1)) ;; esac
+  done
+  echo "DEL $n"
+}
+
 # ---- putanje zapečene u ovom pomoćnom programu i otkrivanje Jellyfina ----
 op_paths() {
   echo "P_CONFIG $C"; echo "P_CACHE $CACHE"; echo "P_LOG $LOG"; echo "P_DATA $DATA"; echo "P_META $META"
@@ -1505,6 +1633,11 @@ main() {
     gpumon) op_gpumon "$@" ;;
     paths) op_paths ;;
     detect) op_detect ;;
+    bkinfo) op_bkinfo ;;
+    backup) op_backup "$@" ;;
+    restore) op_restore "$@" ;;
+    restorelist) op_restorelist ;;
+    restoreclean) op_restoreclean ;;
     *) echo "ERR nepoznata operacija '$op'"; exit 2 ;;
   esac
 }
@@ -1517,7 +1650,8 @@ def helper_script(standalone=True):
     q = shlex.quote
     head = ("#!/bin/sh\n# JellyClean helper - generirano. Dopušta SAMO mjerenje i čišćenje Jellyfin\n"
             "# cachea, logova i siročadi u metadata/library unutar ovih putanja, test\n"
-            "# enkodiranja i NVENC patch (samo odobrene verzije skripte, provjera sha256):\n"
+            "# enkodiranja, NVENC patch (samo odobrene verzije skripte, provjera sha256)\n"
+            "# te sigurnosnu kopiju i vraćanje Jellyfin podataka:\n"
             f"C={q(CFG['jf_config'])}\nCACHE={q(CFG['jf_cache'])}\nLOG={q(CFG['jf_log'])}\n"
             f"DATA={q(CFG['jf_data'])}\nMETA={q(CFG['jf_metadata'])}\n")
     body = HELPER_BODY.replace("__HVER__", str(HELPER_VERSION)).replace("__NVPSHA__", " ".join(NVPATCH_SHA256))
@@ -3819,6 +3953,763 @@ echo "Gotovo. U JellyCleanu klikni 'Pokrenuo sam - provjeri ključ'."
 PVE = PveAccess()
 
 
+# --------------------------------------------------------------------------
+# Sigurnosne kopije Jellyfina (kartica Backup)
+#
+#  • PUNI backup (SSH): baza, postavke, korisnici, pluginovi i STATISTIKA GLEDANJA
+#    (playback_reporting.db), po želji i metapodaci. Vraća se na isti ili drugi server;
+#    na drugom serveru putanje u postavkama prilagode se odredištu.
+#  • KORISNIČKI backup (Jellyfin API): gledanost, pozicija, favoriti, ocjene, playliste i
+#    postavke korisnika. Vraća se na BILO KOJI Jellyfin - stavke se prepoznaju po ID-u,
+#    putanji, IMDb/TMDb/TVDb oznakama, sezoni i epizodi ili nazivu i godini.
+# --------------------------------------------------------------------------
+import tarfile
+
+BK_ID_RE = re.compile(r"^[0-9]{8}-[0-9]{6}-(full|users)-[a-z0-9-]{1,40}$")
+BK_FILES = {"manifest.json", "full.tar.gz", "users.json"}
+BK_ITEM_TYPES = "Movie,Episode,Series,Season,Audio,MusicAlbum,MusicVideo,Video,BoxSet"
+
+
+class BackupCancelled(Exception):
+    pass
+
+
+def human(n):
+    n = float(n or 0)
+    for u in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or u == "TB":
+            return f"{n:.0f} {u}" if u == "B" else f"{n:.1f} {u}"
+        n /= 1024
+
+
+def _slug(s):
+    return re.sub(r"[^a-z0-9]+", "-", (s or "server").lower()).strip("-")[:30] or "server"
+
+
+def _norm_title(s):
+    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", " ", s).strip()
+
+
+def _pids(d):
+    return {k.lower(): str(v).strip().lower() for k, v in (d or {}).items() if v and str(v).strip()}
+
+
+class Backups:
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.job = None
+        self.proc = None
+        self.cancel_ev = threading.Event()
+
+    # ------------------------------------------------------------ spremište ---
+    def root(self):
+        d = os.path.join(_GCFG["data_dir"], "backups")
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        return d
+
+    def path(self, bid, name=None):
+        if not BK_ID_RE.match(bid or ""):
+            raise ValueError("Neispravan ID sigurnosne kopije")
+        p = os.path.join(self.root(), bid)
+        return os.path.join(p, name) if name else p
+
+    def manifest(self, bid):
+        with open(self.path(bid, "manifest.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def list(self):
+        out = []
+        for bid in sorted(os.listdir(self.root()), reverse=True):
+            if not BK_ID_RE.match(bid):
+                continue
+            try:
+                m = self.manifest(bid)
+            except (OSError, ValueError):
+                continue
+            size = 0
+            for n in BK_FILES:
+                try:
+                    size += os.path.getsize(self.path(bid, n))
+                except OSError:
+                    pass
+            m["size"] = size
+            m.pop("paths_detail", None)
+            out.append(m)
+        return out
+
+    def disk(self):
+        try:
+            st = os.statvfs(self.root())
+            return {"free": st.f_bavail * st.f_frsize, "total": st.f_blocks * st.f_frsize, "dir": self.root()}
+        except OSError:
+            return None
+
+    def delete(self, bid):
+        with self.lock:
+            if self.job and self.job.get("running") and self.job.get("backup") == bid:
+                raise ValueError("Ova kopija se upravo koristi")
+            shutil.rmtree(self.path(bid))
+        log(f"Backup: obrisana kopija {bid}")
+        return {"ok": True}
+
+    # ------------------------------------------------------------- poslovi ---
+    def state(self):
+        with self.lock:
+            j = dict(self.job) if self.job else None
+        if j and j.get("file"):
+            try:
+                j["bytes"] = os.path.getsize(j["file"])
+            except OSError:
+                pass
+        return j
+
+    def _start(self, kind, title, target, srv, **extra):
+        with self.lock:
+            if self.job and self.job.get("running"):
+                raise ValueError("Već radi: " + self.job.get("title", "posao"))
+            self.cancel_ev.clear()
+            self.job = {"kind": kind, "title": title, "running": True, "started": now_iso(), "server": srv.name,
+                        "server_id": srv.id, "phase": "Pokrećem…", "log": [], "error": None, "result": None,
+                        "progress": None, **extra}
+        th = CtxThread(target=self._wrap, args=(target, srv), daemon=True)
+        th.start()
+        return self.state()
+
+    def _wrap(self, target, srv):
+        try:
+            with use_server(srv):
+                res = target()
+            with self.lock:
+                self.job.update(running=False, phase="Gotovo", result=res, finished=now_iso())
+        except BackupCancelled:
+            with self.lock:
+                self.job.update(running=False, phase="Prekinuto", error="Prekinuto", finished=now_iso())
+        except Exception as e:
+            traceback.print_exc()
+            with self.lock:
+                self.job.update(running=False, phase="Greška", error=str(e), finished=now_iso())
+            log("Backup greška:", e)
+        finally:
+            self.proc = None
+
+    def _phase(self, txt, progress=None):
+        with self.lock:
+            self.job["phase"] = txt
+            if progress is not None:
+                self.job["progress"] = progress
+            self.job["log"].append(f"{time.strftime('%H:%M:%S')} {txt}")
+            self.job["log"] = self.job["log"][-200:]
+
+    def _check(self):
+        if self.cancel_ev.is_set():
+            raise BackupCancelled()
+
+    def cancel(self):
+        self.cancel_ev.set()
+        p = self.proc
+        if p and p.poll() is None:
+            p.terminate()
+        return {"ok": True}
+
+    # -------------------------------------------------------- SSH (binarno) ---
+    def _ssh_cmd(self, op, args=(), stdin_data=False):
+        """Kao JFConfig._cmd, ali za binarni izlaz/ulaz. U izravnom načinu skripta ide u argument
+        naredbe (base64), da stdin ostane slobodan za arhivu."""
+        cmd, stdin = JFC._cmd(op, args)
+        if not CFG["ssh_helper"]:
+            argstr = " ".join(shlex.quote(str(a)) for a in (op, *args))
+            b64 = base64.b64encode((helper_script(standalone=False) + f"\nmain {argstr}\n").encode()).decode()
+            inner = 'eval "$(echo ' + b64 + ' | base64 -d)"'
+            cmd[-1] = ("sudo -n " if CFG["ssh_sudo"] else "") + "sh -c " + shlex.quote(inner)
+            stdin = ""
+        return cmd, stdin
+
+    def info(self):
+        """Što će ući u puni backup ovog servera (veličine, statistika, Jellyfin kontrola)."""
+        res = {"ssh": JFC.enabled(), "api": JF.enabled(), "server": _CUR.srv.name if getattr(_CUR, "srv", None) else None}
+        if JFC.enabled():
+            try:
+                out = JFC.run("bkinfo", timeout=180)
+                sz, info = {}, {}
+                for line in out.splitlines():
+                    p = line.split(" ", 2)
+                    if p[0] == "SZ" and len(p) >= 3:
+                        sz[p[1]] = int(p[2]) if p[2].isdigit() else None
+                    elif p[0] == "STATS" and len(p) >= 3:
+                        info["stats"] = {"size": int(p[1]), "path": p[2]}
+                    elif p[0] == "CTL":
+                        info["ctl"] = None if p[1] == "none" else p[1]
+                        info["ctl_name"] = p[2] if len(p) > 2 else None
+                    elif p[0] == "CONF":
+                        info["conf"] = None if p[1] == "-" else line[5:]
+                    elif p[0] == "DF" and len(p) >= 3:
+                        f = line.split()
+                        info["disk_free"] = int(f[3]) if len(f) > 3 else None
+                    elif p[0] == "TAR":
+                        info["tar"] = p[1] == "1"
+                    elif p[0] == "PREVS":
+                        info["prevs"] = int(p[1])
+                    elif p[0] == "DBSZ":
+                        info["db"] = int(p[1]) if p[1].lstrip("-").isdigit() else None
+                info["sizes"] = sz
+                res["full"] = info
+            except SSHError as e:
+                res["full_error"] = str(e)
+        if JF.enabled():
+            try:
+                res["users"] = [{"id": u["Id"], "name": u["Name"], "admin": bool((u.get("Policy") or {}).get("IsAdministrator"))}
+                                for u in (JF.req("GET", "/Users") or [])]
+            except Exception as e:
+                res["users_error"] = str(e)
+        res["local_disk"] = self.disk()
+        return res
+
+    def _jf_meta(self):
+        """Podaci o izvornom Jellyfinu za manifest (verzija, ID servera, putanje)."""
+        m = {}
+        if JF.enabled():
+            try:
+                si = JF.req("GET", "/System/Info") or {}
+                m = {"version": si.get("Version"), "server_id": si.get("Id"), "server_name": si.get("ServerName"),
+                     "os": si.get("OperatingSystemDisplayName"),
+                     "paths": {k: si.get(k) for k in ("ProgramDataPath", "CachePath", "LogPath", "InternalMetadataPath",
+                                                       "TranscodingTempPath", "ItemsByNamePath") if si.get(k)}}
+            except Exception as e:
+                m = {"error": str(e)}
+        return m
+
+    def _new_dir(self, kind, srv):
+        bid = f"{time.strftime('%Y%m%d-%H%M%S')}-{kind}-{_slug(srv.name)}"
+        p = self.path(bid)
+        os.makedirs(p, mode=0o700)
+        return bid, p
+
+    # ----------------------------------------------------------- puni backup ---
+    def start_full(self, stop=True, meta=False):
+        if not JFC.enabled():
+            raise ValueError("Puni backup treba SSH pristup Jellyfin računalu (kartica Serveri → Postavi pristup)")
+        if JFC.status and JFC.status.get("helper_outdated"):
+            raise ValueError("Pomoćni program na Jellyfin računalu je zastario - na kartici Serveri klikni 'Postavi pristup' i pokreni novu naredbu.")
+        srv = _CUR.srv
+        return self._start("full", f"Puni backup: {srv.name}", lambda: self._full(srv, bool(stop), bool(meta)), srv)
+
+    def _full(self, srv, stop, meta):
+        bid, d = self._new_dir("full", srv)
+        with self.lock:
+            self.job["backup"] = bid
+            self.job["file"] = os.path.join(d, "full.tar.gz")
+        try:
+            self._phase("Podaci o Jellyfinu…")
+            jm = self._jf_meta()
+            self._phase("Zaustavljam Jellyfin i pakiram podatke…" if stop else "Pakiram podatke (Jellyfin radi)…")
+            cmd, stdin = self._ssh_cmd("backup", (1 if stop else 0, 1 if meta else 0))
+            errlines = []
+            with open(os.path.join(d, "full.tar.gz"), "wb") as out:
+                self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=out, stderr=subprocess.PIPE)
+                try:
+                    self.proc.stdin.write(stdin.encode())
+                    self.proc.stdin.close()
+                except BrokenPipeError:
+                    pass
+                for raw in self.proc.stderr:
+                    line = raw.decode("utf-8", "replace").rstrip()
+                    errlines.append(line)
+                    if line.startswith("INFO STOPPED"):
+                        self._phase("Jellyfin zaustavljen, pakiram…")
+                    elif line.startswith("INFO STARTED"):
+                        self._phase("Jellyfin ponovno pokrenut")
+                    elif line.startswith("WARN"):
+                        self._phase("Upozorenje: " + line[5:])
+                rc = self.proc.wait()
+            self._check()
+            err = next((l[4:] for l in errlines if l.startswith("ERR ")), None)
+            if err or rc != 0:
+                raise SSHError(err or ("SSH/tar greška: " + " ".join(errlines[-3:])[:300]))
+            size = os.path.getsize(os.path.join(d, "full.tar.gz"))
+            self._phase("Provjeravam arhivu…")
+            names = []
+            with tarfile.open(os.path.join(d, "full.tar.gz"), "r:gz") as t:
+                for mem in t:
+                    self._check()
+                    names.append(mem.name)
+            stats = any(n.endswith("playback_reporting.db") for n in names)
+            if not any(re.search(r"(^|/)data/(data/)?(jellyfin|library)\.db$", n) for n in names):
+                raise ValueError("U arhivi nema Jellyfin baze")
+            m = {"id": bid, "kind": "full", "created": now_iso(), "app": APP_VERSION,
+                 "server": {"id": srv.id, "name": srv.name, "url": CFG["jf_url"], "ssh_host": CFG["ssh_host"]},
+                 "jellyfin": jm, "options": {"stopped": stop, "metadata": meta},
+                 "contents": {"files": len(names), "stats": stats, "plugins": sum(1 for n in names if "/plugins/" in n and n.endswith(".dll")),
+                              "metadata": meta}, "archive_size": size}
+            with open(os.path.join(d, "manifest.json"), "w", encoding="utf-8") as f:
+                json.dump(m, f, ensure_ascii=False, indent=1)
+            log(f"Backup: puni backup {bid} ({human(size)}, statistika: {'da' if stats else 'nema'})")
+            return {"backup": bid, "size": size, "stats": stats}
+        except BaseException:
+            shutil.rmtree(d, ignore_errors=True)
+            raise
+
+    # ----------------------------------------------------- korisnički backup ---
+    def start_users(self, user_ids=None):
+        if not JF.enabled():
+            raise ValueError("Korisnički backup treba Jellyfin URL i API ključ (kartica Serveri)")
+        srv = _CUR.srv
+        return self._start("users", f"Korisnički backup: {srv.name}", lambda: self._users(srv, user_ids or []), srv)
+
+    def _items(self, uid, extra):
+        out, start = [], 0
+        while True:
+            self._check()
+            params = dict(Recursive="true", IncludeItemTypes=BK_ITEM_TYPES, EnableUserData="true", StartIndex=start, Limit=500,
+                          Fields="ProviderIds,Path,ProductionYear,ParentIndexNumber,IndexNumber,SeriesId,SeriesName,MediaType")
+            params.update(extra)
+            r = JF.req("GET", f"/Users/{uid}/Items", params, timeout=180) or {}
+            items = r.get("Items") or []
+            out += items
+            start += len(items)
+            if not items or start >= (r.get("TotalRecordCount") or 0):
+                return out
+
+    @staticmethod
+    def _key(it):
+        return {"id": it.get("Id"), "type": it.get("Type"), "name": it.get("Name"), "year": it.get("ProductionYear"),
+                "path": it.get("Path"), "pids": _pids(it.get("ProviderIds")), "season": it.get("ParentIndexNumber"),
+                "episode": it.get("IndexNumber"), "series_id": it.get("SeriesId"), "series": it.get("SeriesName")}
+
+    def _users(self, srv, sel):
+        bid, d = self._new_dir("users", srv)
+        with self.lock:
+            self.job["backup"] = bid
+        try:
+            jm = self._jf_meta()
+            users = JF.req("GET", "/Users") or []
+            if sel:
+                users = [u for u in users if u["Id"] in sel]
+            if not users:
+                raise ValueError("Nema korisnika za backup")
+            libs = [{"id": v.get("ItemId"), "name": v.get("Name")} for v in (JF.req("GET", "/Library/VirtualFolders") or [])]
+            series_ids, data = set(), []
+            for n, u in enumerate(users, 1):
+                self._phase(f"Korisnik {u['Name']} ({n}/{len(users)})…", {"done": n - 1, "total": len(users)})
+                seen = {}
+                for flt in ("IsPlayed", "IsFavorite", "IsResumable", "Likes", "Dislikes"):
+                    for it in self._items(u["Id"], {"Filters": flt}):
+                        seen[it["Id"]] = it
+                items, playlists = [], []
+                for it in seen.values():
+                    if it.get("Type") == "Playlist":
+                        continue
+                    ud = it.get("UserData") or {}
+                    k = self._key(it)
+                    k["ud"] = {x: ud.get(x) for x in ("Played", "PlayCount", "PlaybackPositionTicks", "IsFavorite",
+                                                       "Likes", "Rating", "LastPlayedDate") if ud.get(x) is not None}
+                    if it.get("SeriesId"):
+                        series_ids.add(it["SeriesId"])
+                    items.append(k)
+                for pl in self._items(u["Id"], {"IncludeItemTypes": "Playlist"}):
+                    if pl.get("Type") != "Playlist":
+                        continue
+                    self._check()
+                    r = JF.req("GET", f"/Playlists/{pl['Id']}/Items", {"UserId": u["Id"], "Fields": "ProviderIds,Path,ProductionYear,ParentIndexNumber,IndexNumber,SeriesId,SeriesName"}) or {}
+                    pitems = []
+                    for it in r.get("Items") or []:
+                        pitems.append(self._key(it))
+                        if it.get("SeriesId"):
+                            series_ids.add(it["SeriesId"])
+                    playlists.append({"name": pl.get("Name"), "media_type": pl.get("MediaType"), "items": pitems})
+                full = JF.req("GET", f"/Users/{u['Id']}") or u
+                data.append({"id": u["Id"], "name": u["Name"], "configuration": full.get("Configuration"),
+                             "policy": full.get("Policy"), "items": items, "playlists": playlists})
+                self._phase(f"Korisnik {u['Name']}: {len(items)} stavki, {len(playlists)} playlista")
+            # oznake serija (za prepoznavanje epizoda na drugom serveru)
+            self._phase("Oznake serija…")
+            series, ids = {}, list(series_ids)
+            for i in range(0, len(ids), 150):
+                self._check()
+                r = JF.req("GET", "/Items", {"Ids": ",".join(ids[i:i + 150]), "Fields": "ProviderIds,Path,ProductionYear"}) or {}
+                for s in r.get("Items") or []:
+                    series[s["Id"]] = {"name": s.get("Name"), "year": s.get("ProductionYear"), "pids": _pids(s.get("ProviderIds")), "path": s.get("Path")}
+            doc = {"format": 1, "created": now_iso(), "server": {"id": srv.id, "name": srv.name, "url": CFG["jf_url"]},
+                   "jellyfin": jm, "libraries": libs, "series": series, "users": data}
+            with open(os.path.join(d, "users.json"), "w", encoding="utf-8") as f:
+                json.dump(doc, f, ensure_ascii=False)
+            cnt = {"users": len(data), "items": sum(len(u["items"]) for u in data),
+                   "played": sum(1 for u in data for i in u["items"] if i["ud"].get("Played")),
+                   "favorites": sum(1 for u in data for i in u["items"] if i["ud"].get("IsFavorite")),
+                   "resume": sum(1 for u in data for i in u["items"] if (i["ud"].get("PlaybackPositionTicks") or 0) > 0),
+                   "playlists": sum(len(u["playlists"]) for u in data)}
+            m = {"id": bid, "kind": "users", "created": now_iso(), "app": APP_VERSION,
+                 "server": {"id": srv.id, "name": srv.name, "url": CFG["jf_url"]}, "jellyfin": jm,
+                 "contents": cnt, "user_names": [u["name"] for u in data]}
+            with open(os.path.join(d, "manifest.json"), "w", encoding="utf-8") as f:
+                json.dump(m, f, ensure_ascii=False, indent=1)
+            log(f"Backup: korisnički backup {bid} ({cnt['users']} korisnika, {cnt['items']} stavki)")
+            return {"backup": bid, **cnt}
+        except BaseException:
+            shutil.rmtree(d, ignore_errors=True)
+            raise
+
+    # ---------------------------------------------------------------- vraćanje ---
+    def start_restore(self, bid, target_sid, opts):
+        m = self.manifest(bid)
+        srv = SERVERS.get(target_sid) if target_sid else _CUR.srv
+        if not srv:
+            raise ValueError("Odredišni server ne postoji")
+        same = m.get("server", {}).get("id") == srv.id
+        fn = self._restore_full if m["kind"] == "full" else self._restore_users
+        with use_server(srv):
+            if m["kind"] == "full" and not JFC.enabled():
+                raise ValueError(f"Za vraćanje punog backupa {srv.name} treba SSH pristup (kartica Serveri → Postavi pristup)")
+            if m["kind"] == "users" and not JF.enabled():
+                raise ValueError(f"Za vraćanje korisničkog backupa {srv.name} treba Jellyfin URL i API ključ")
+        return self._start("restore", f"Vraćanje {'punog' if m['kind'] == 'full' else 'korisničkog'} backupa → {srv.name}",
+                           lambda: fn(bid, m, srv, same, opts or {}), srv, backup=bid)
+
+    def _restore_full(self, bid, m, srv, same, opts):
+        src = (m.get("jellyfin") or {})
+        pairs = []
+        dst = self._jf_meta()
+        if src.get("version") and dst.get("version"):
+            try:
+                if [int(x) for x in re.findall(r"\d+", dst["version"])[:3]] < [int(x) for x in re.findall(r"\d+", src["version"])[:3]]:
+                    if not opts.get("allow_downgrade"):
+                        raise ValueError(f"Odredišni Jellyfin ({dst['version']}) je stariji od izvornog ({src['version']}) - "
+                                         "baza se ne može vratiti na stariju verziju. Prvo nadogradi Jellyfin na odredištu.")
+            except ValueError:
+                raise
+        if opts.get("remap", not same):
+            sp, dp = src.get("paths") or {}, dst.get("paths") or {}
+            for k in ("ProgramDataPath", "CachePath", "LogPath", "InternalMetadataPath", "TranscodingTempPath"):
+                a, b = (sp.get(k) or "").rstrip("/"), (dp.get(k) or "").rstrip("/")
+                if a and b and a != b and a.startswith("/") and b.startswith("/") and "#" not in a + b and "|" not in a + b:
+                    pairs.append((a, b))
+            pairs.sort(key=lambda p: -len(p[0]))
+        b64 = base64.b64encode("".join(f"{a}|{b}\n" for a, b in pairs).encode()).decode() if pairs else ""
+        newid = 1 if opts.get("new_server_id") else 0
+        arc = self.path(bid, "full.tar.gz")
+        total = os.path.getsize(arc)
+        self._phase(f"Šaljem arhivu ({human(total)}) na {CFG['ssh_host']}…", {"done": 0, "total": total})
+        cmd, _ = self._ssh_cmd("restore", (b64, newid))
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        sent = 0
+        try:
+            with open(arc, "rb") as f:
+                while True:
+                    self._check()
+                    chunk = f.read(1 << 20)
+                    if not chunk:
+                        break
+                    self.proc.stdin.write(chunk)
+                    sent += len(chunk)
+                    with self.lock:
+                        self.job["progress"] = {"done": sent, "total": total}
+            self.proc.stdin.close()
+        except BrokenPipeError:
+            pass
+        self._phase("Jellyfin računalo raspakirava i vraća podatke…")
+        out, err = self.proc.communicate(timeout=7200)
+        out = out.decode("utf-8", "replace")
+        res = {"pairs": pairs, "new_server_id": bool(newid), "same_server": same}
+        for line in out.splitlines():
+            if line.startswith("ERR "):
+                raise SSHError(line[4:])
+            p = line.split(" ", 1)
+            if p[0] == "PREV":
+                res["prev"] = p[1]
+            elif p[0] == "STARTED":
+                res["started"] = True
+            elif p[0] == "WARN":
+                res["warning"] = p[1]
+            elif p[0] == "REMAP":
+                res["remapped_files"] = int(p[1])
+        if "DONE" not in out:
+            raise SSHError("Vraćanje nije završilo: " + (err.decode("utf-8", "replace").strip() or out[-300:])[:400])
+        log(f"Backup: puni backup {bid} vraćen na {srv.name}" + (f", stari podaci u {res.get('prev')}" if res.get("prev") else ""))
+        if JF.enabled():
+            self._phase("Čekam da Jellyfin krene…")
+            for _ in range(90):
+                try:
+                    JF.req("GET", "/System/Info/Public", timeout=5)
+                    break
+                except Exception:
+                    time.sleep(4)
+        return res
+
+    def _target_index(self, admin):
+        idx = {"id": set(), "path": {}, "pid": {}, "ep": {}, "name": {}, "series_pid": {}, "series_name": {}}
+        start = 0
+        while True:
+            self._check()
+            r = JF.req("GET", f"/Users/{admin}/Items", dict(
+                Recursive="true", IncludeItemTypes=BK_ITEM_TYPES, StartIndex=start, Limit=1000, EnableUserData="false",
+                Fields="ProviderIds,Path,ProductionYear,ParentIndexNumber,IndexNumber,SeriesId"), timeout=300) or {}
+            items = r.get("Items") or []
+            for it in items:
+                iid, t = it["Id"], it.get("Type")
+                idx["id"].add(iid)
+                if it.get("Path"):
+                    idx["path"].setdefault(it["Path"], iid)
+                for k, v in _pids(it.get("ProviderIds")).items():
+                    idx["pid"].setdefault((t, k, v), iid)
+                    if t == "Series":
+                        idx["series_pid"].setdefault((k, v), iid)
+                if t == "Series":
+                    idx["series_name"].setdefault(_norm_title(it.get("Name")), iid)
+                if t == "Episode" and it.get("SeriesId") and it.get("IndexNumber") is not None:
+                    idx["ep"].setdefault((it["SeriesId"], it.get("ParentIndexNumber"), it["IndexNumber"]), iid)
+                idx["name"].setdefault((t, _norm_title(it.get("Name")), it.get("ProductionYear")), iid)
+            start += len(items)
+            with self.lock:
+                self.job["progress"] = {"done": start, "total": r.get("TotalRecordCount") or start}
+            if not items or start >= (r.get("TotalRecordCount") or 0):
+                return idx
+
+    @staticmethod
+    def _match(k, idx, series, same, path_map):
+        if same and k.get("id") in idx["id"]:
+            return k["id"]
+        p = k.get("path")
+        if p:
+            if p in idx["path"]:
+                return idx["path"][p]
+            for a, b in path_map:
+                if p.startswith(a) and (b + p[len(a):]) in idx["path"]:
+                    return idx["path"][b + p[len(a):]]
+        t = k.get("type")
+        for kk in ("imdb", "tmdb", "tvdb"):
+            v = (k.get("pids") or {}).get(kk)
+            if v and (t, kk, v) in idx["pid"]:
+                return idx["pid"][(t, kk, v)]
+        if t == "Episode" and k.get("episode") is not None:
+            s = series.get(k.get("series_id") or "") or {"name": k.get("series"), "pids": {}}
+            tsid = None
+            for kk in ("tvdb", "tmdb", "imdb"):
+                v = (s.get("pids") or {}).get(kk)
+                if v and (kk, v) in idx["series_pid"]:
+                    tsid = idx["series_pid"][(kk, v)]
+                    break
+            tsid = tsid or idx["series_name"].get(_norm_title(s.get("name")))
+            if tsid:
+                return idx["ep"].get((tsid, k.get("season"), k["episode"]))
+            return None
+        return idx["name"].get((t, _norm_title(k.get("name")), k.get("year")))
+
+    def _set_userdata(self, uid, iid, ud):
+        body = {x: ud[x] for x in ("Played", "PlayCount", "PlaybackPositionTicks", "IsFavorite", "Likes", "Rating", "LastPlayedDate") if x in ud}
+        for path in (f"/UserItems/{iid}/UserData", f"/Users/{uid}/Items/{iid}/UserData"):
+            try:
+                JF.req("POST", path, {"userId": uid} if path.startswith("/UserItems") else None, body)
+                return True
+            except urllib.error.HTTPError as e:
+                if e.code not in (404, 405):
+                    raise
+        # stari Jellyfin: zasebne radnje
+        if ud.get("Played"):
+            JF.req("POST", f"/Users/{uid}/PlayedItems/{iid}", {"datePlayed": ud.get("LastPlayedDate")} if ud.get("LastPlayedDate") else None)
+        if ud.get("IsFavorite"):
+            JF.req("POST", f"/Users/{uid}/FavoriteItems/{iid}")
+        return True
+
+    def _restore_users(self, bid, m, srv, same, opts):
+        with open(self.path(bid, "users.json"), encoding="utf-8") as f:
+            doc = json.load(f)
+        sel = set(opts.get("users") or [])
+        src_users = [u for u in doc["users"] if not sel or u["id"] in sel or u["name"] in sel]
+        self._phase("Korisnici na odredištu…")
+        tusers = JF.req("GET", "/Users") or []
+        byname = {u["Name"].lower(): u for u in tusers}
+        admin = next((u["Id"] for u in tusers if (u.get("Policy") or {}).get("IsAdministrator")), tusers[0]["Id"] if tusers else None)
+        if not admin:
+            raise ValueError("Na odredišnom Jellyfinu nema korisnika")
+        tlibs = {(v.get("Name") or "").lower(): v.get("ItemId") for v in (JF.req("GET", "/Library/VirtualFolders") or [])}
+        slibs = {l["id"]: (l.get("name") or "").lower() for l in doc.get("libraries") or []}
+        libmap = {sid: tlibs.get(n) for sid, n in slibs.items() if tlibs.get(n)}
+        path_map = [(a.rstrip("/"), b.rstrip("/")) for a, b in (opts.get("path_map") or []) if a and b]
+        self._phase("Popis stavki na odredištu…")
+        idx = self._target_index(admin)
+        series = doc.get("series") or {}
+        report = {"users": [], "created_users": [], "same_server": same}
+        for n, su in enumerate(src_users, 1):
+            self._check()
+            tu = byname.get(su["name"].lower())
+            if not tu and opts.get("create_users", True):
+                pw = secrets.token_urlsafe(9)
+                tu = JF.req("POST", "/Users/New", None, {"Name": su["name"], "Password": pw})
+                report["created_users"].append({"name": su["name"], "password": pw})
+                log(f"Backup: na {srv.name} stvoren korisnik {su['name']}")
+            if not tu:
+                report["users"].append({"name": su["name"], "skipped": "korisnik ne postoji na odredištu"})
+                continue
+            uid = tu["Id"]
+            ur = {"name": su["name"], "matched": 0, "applied": 0, "unmatched": [], "playlists": 0, "errors": 0}
+            total = len(su["items"])
+            for i, k in enumerate(su["items"], 1):
+                if i % 25 == 0:
+                    self._check()
+                    with self.lock:
+                        self.job["progress"] = {"done": i, "total": total}
+                        self.job["phase"] = f"Korisnik {su['name']} ({n}/{len(src_users)}): {i}/{total}"
+                iid = self._match(k, idx, series, same, path_map)
+                if not iid:
+                    ur["unmatched"].append({"type": k.get("type"), "name": k.get("name"), "year": k.get("year"),
+                                            "series": k.get("series"), "season": k.get("season"), "episode": k.get("episode")})
+                    continue
+                ur["matched"] += 1
+                try:
+                    self._set_userdata(uid, iid, k.get("ud") or {})
+                    ur["applied"] += 1
+                except Exception as e:
+                    ur["errors"] += 1
+                    if ur["errors"] <= 3:
+                        log(f"Backup: {su['name']} / {k.get('name')}: {e}")
+            if opts.get("playlists", True):
+                existing = {}
+                try:
+                    r = JF.req("GET", f"/Users/{uid}/Items", {"Recursive": "true", "IncludeItemTypes": "Playlist"}) or {}
+                    existing = {(p.get("Name") or "").lower(): p["Id"] for p in r.get("Items") or []}
+                except Exception:
+                    pass
+                for pl in su.get("playlists") or []:
+                    ids = [x for x in (self._match(k, idx, series, same, path_map) for k in pl["items"]) if x]
+                    if not ids:
+                        continue
+                    try:
+                        pid = existing.get((pl["name"] or "").lower())
+                        if pid:
+                            cur = {it["Id"] for it in ((JF.req("GET", f"/Playlists/{pid}/Items", {"UserId": uid}) or {}).get("Items") or [])}
+                            add = [x for x in ids if x not in cur]
+                            for j in range(0, len(add), 100):
+                                JF.req("POST", f"/Playlists/{pid}/Items", {"ids": ",".join(add[j:j + 100]), "userId": uid})
+                        else:
+                            JF.req("POST", "/Playlists", None, {"Name": pl["name"], "Ids": ids, "UserId": uid,
+                                                                 "MediaType": pl.get("media_type") or None})
+                        ur["playlists"] += 1
+                    except Exception as e:
+                        log(f"Backup: playlista {pl['name']}: {e}")
+            if opts.get("settings", True) and su.get("configuration"):
+                c = dict(su["configuration"])
+                for key in ("OrderedViews", "MyMediaExcludes", "LatestItemsExcludes", "GroupedFolders"):
+                    if isinstance(c.get(key), list):
+                        c[key] = [libmap[x] for x in c[key] if x in libmap] if not same else c[key]
+                try:
+                    JF.req("POST", f"/Users/{uid}/Configuration", None, c)
+                    ur["settings"] = True
+                except Exception as e:
+                    log(f"Backup: postavke {su['name']}: {e}")
+            if opts.get("policy") and su.get("policy"):
+                pol = dict(tu.get("Policy") or {})
+                sp = dict(su["policy"])
+                for key in ("AuthenticationProviderId", "PasswordResetProviderId"):
+                    sp.pop(key, None)
+                if not same and isinstance(sp.get("EnabledFolders"), list):
+                    sp["EnabledFolders"] = [libmap[x] for x in sp["EnabledFolders"] if x in libmap]
+                    sp.pop("EnabledChannels", None)
+                pol.update(sp)
+                try:
+                    JF.req("POST", f"/Users/{uid}/Policy", None, pol)
+                    ur["policy"] = True
+                except Exception as e:
+                    log(f"Backup: dozvole {su['name']}: {e}")
+            ur["unmatched_count"] = len(ur["unmatched"])
+            report["users"].append(ur)
+            self._phase(f"Korisnik {su['name']}: prepoznato {ur['matched']}/{total}, nije pronađeno {len(ur['unmatched'])}")
+        rp = f"restore-{time.strftime('%Y%m%d-%H%M%S')}.json"
+        try:
+            with open(self.path(bid, rp), "w", encoding="utf-8") as f:
+                json.dump({"target": srv.name, **report}, f, ensure_ascii=False, indent=1)
+            report["report_file"] = rp
+        except OSError:
+            pass
+        log(f"Backup: korisnički backup {bid} vraćen na {srv.name}")
+        for u in report["users"]:
+            u["unmatched"] = u.get("unmatched", [])[:300]
+        return report
+
+    # ------------------------------------------ kopije prije vraćanja (SSH) ---
+    def prevs(self):
+        out = JFC.run("restorelist", timeout=120)
+        return [{"size": int(p[1]), "name": p[2]} for p in (l.split(" ", 2) for l in out.splitlines()) if p[0] == "PREVDIR" and len(p) == 3]
+
+    def prevs_clean(self):
+        out = JFC.run("restoreclean", timeout=600)
+        n = next((int(l.split()[1]) for l in out.splitlines() if l.startswith("DEL ")), 0)
+        log(f"Backup: obrisano {n} kopija prije vraćanja")
+        return {"deleted": n}
+
+    # -------------------------------------------- preuzimanje / učitavanje ---
+    def stream_download(self, bid, wfile):
+        d = self.path(bid)
+        with tarfile.open(fileobj=wfile, mode="w|") as t:
+            for n in sorted(os.listdir(d)):
+                if n in BK_FILES or re.fullmatch(r"restore-[0-9-]+\.json", n):
+                    t.add(os.path.join(d, n), arcname=f"{bid}/{n}", recursive=False)
+
+    def upload(self, rfile, length):
+        if length <= 0:
+            raise ValueError("Prazna datoteka")
+        free = (self.disk() or {}).get("free") or 0
+        if length > free - 256 * 1024 * 1024:
+            raise ValueError(f"Nema dovoljno mjesta u {self.root()} ({human(free)} slobodno)")
+        tmp = os.path.join(self.root(), f".upload-{secrets.token_hex(4)}")
+        os.makedirs(tmp, mode=0o700)
+        try:
+            raw = os.path.join(tmp, "in.tar")
+            left = length
+            with open(raw, "wb") as f:
+                while left > 0:
+                    chunk = rfile.read(min(left, 1 << 20))
+                    if not chunk:
+                        raise ValueError("Prijenos prekinut")
+                    f.write(chunk)
+                    left -= len(chunk)
+            try:
+                t = tarfile.open(raw, "r:*")
+            except tarfile.TarError:
+                raise ValueError("Datoteka nije JellyClean sigurnosna kopija (.tar)")
+            with t:
+                members = t.getmembers()
+                tops = {m.name.split("/", 1)[0] for m in members}
+                if len(tops) != 1:
+                    raise ValueError("Arhiva mora sadržavati točno jednu sigurnosnu kopiju")
+                src = tops.pop()
+                if not BK_ID_RE.match(src):
+                    raise ValueError("Naziv kopije u arhivi nije ispravan")
+                files = {}
+                for mem in members:
+                    rest = mem.name.split("/", 1)[1] if "/" in mem.name else ""
+                    if not rest:
+                        continue
+                    if not mem.isfile() or "/" in rest or not (rest in BK_FILES or re.fullmatch(r"restore-[0-9-]+\.json", rest)):
+                        raise ValueError(f"Neočekivana datoteka u arhivi: {mem.name}")
+                    files[rest] = mem
+                if "manifest.json" not in files:
+                    raise ValueError("U arhivi nema manifest.json")
+                m = json.load(t.extractfile(files["manifest.json"]))
+                kind = m.get("kind")
+                need = {"full": "full.tar.gz", "users": "users.json"}.get(kind)
+                if not need or need not in files:
+                    raise ValueError("Arhiva nije potpuna")
+                bid = src
+                if os.path.exists(self.path(bid)):
+                    bid = f"{time.strftime('%Y%m%d-%H%M%S')}-{kind}-{_slug('ucitano-' + (m.get('server') or {}).get('name', ''))}"
+                dst = self.path(bid)
+                os.makedirs(dst, mode=0o700)
+                for name, mem in files.items():
+                    with t.extractfile(mem) as fin, open(os.path.join(dst, name), "wb") as fout:
+                        shutil.copyfileobj(fin, fout, 1 << 20)
+                m["id"] = bid
+                m["uploaded"] = now_iso()
+                with open(os.path.join(dst, "manifest.json"), "w", encoding="utf-8") as f:
+                    json.dump(m, f, ensure_ascii=False, indent=1)
+            log(f"Backup: učitana kopija {bid}")
+            return {"ok": True, "id": bid, "kind": kind}
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+BK = Backups()
+
+
 def scheduler():
     last_scan = time.time()
     last_purge = 0
@@ -4096,6 +4987,35 @@ class Handler(BaseHTTPRequestHandler):
             if u.path in ("/", "/index.html"):
                 with open(os.path.join(STATIC_DIR, "index.html"), "rb") as f:
                     return self._send(200, f.read(), "text/html; charset=utf-8")
+            if u.path == "/api/backup":
+                return self._send(200, {"backups": BK.list(), "job": BK.state(), "disk": BK.disk(),
+                                        "servers": [{"id": s.id, "name": s.name} for s in SERVERS.all()],
+                                        "current": _CUR.srv.id if getattr(_CUR, "srv", None) else None})
+            if u.path == "/api/backup/info":
+                return self._send(200, BK.info())
+            if u.path == "/api/backup/prevs":
+                return self._send(200, {"prevs": BK.prevs()})
+            if u.path == "/api/backup/manifest":
+                return self._send(200, BK.manifest(q.get("id")))
+            if u.path == "/api/backup/report":
+                if not re.fullmatch(r"restore-[0-9-]+\.json", q.get("file") or ""):
+                    return self._send(400, {"error": "neispravna datoteka"})
+                with open(BK.path(q.get("id"), q["file"]), encoding="utf-8") as f:
+                    return self._send(200, json.load(f))
+            if u.path == "/api/backup/download":
+                bid = q.get("id") or ""
+                BK.manifest(bid)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-tar")
+                self.send_header("Content-Disposition", f'attachment; filename="jellyclean-{bid}.tar"')
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                try:
+                    BK.stream_download(bid, self.wfile)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                self.close_connection = True
+                return
             if u.path == "/api/pve":
                 return self._send(200, PVE.status(check=q.get("check", "1") != "0"))
             if u.path == "/api/pve/migrate":
@@ -4184,6 +5104,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("X-Requested-With") != "JellyClean":
             return self._send(403, {"error": "Nedostaje X-Requested-With"})
         u = urllib.parse.urlparse(self.path)
+        if u.path == "/api/backup/upload":
+            try:
+                return self._send(200, BK.upload(self.rfile, int(self.headers.get("Content-Length") or 0)))
+            except (ValueError, OSError, KeyError, tarfile.TarError) as e:
+                self.close_connection = True
+                return self._send(400, {"error": str(e)})
         try:
             body = self._body()
             if u.path == "/api/scan":
@@ -4266,6 +5192,18 @@ class Handler(BaseHTTPRequestHandler):
                                             "wget": f"wget -qO- '{url}' | sudo sh", "expires_min": 30,
                                             "user": sv.cfg["ssh_user"], "host": sv.cfg["ssh_host"]})
                 return self._send(404, {"error": "Nepoznata radnja"})
+            if u.path == "/api/backup/full":
+                return self._send(200, BK.start_full(body.get("stop", True), body.get("metadata", False)))
+            if u.path == "/api/backup/users":
+                return self._send(200, BK.start_users(body.get("users")))
+            if u.path == "/api/backup/restore":
+                return self._send(200, BK.start_restore(body.get("id"), body.get("target"), body.get("options")))
+            if u.path == "/api/backup/delete":
+                return self._send(200, BK.delete(body.get("id")))
+            if u.path == "/api/backup/cancel":
+                return self._send(200, BK.cancel())
+            if u.path == "/api/backup/prevs/clean":
+                return self._send(200, BK.prevs_clean())
             if u.path == "/api/pve/setup":
                 host = self.headers.get("Host") or f"{CFG['bind']}:{CFG['port']}"
                 return self._send(200, PVE.setup(body.get("host"), body.get("port"), host))
